@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import ReactECharts from 'echarts-for-react';
-import { BarChart3, BookOpen, BriefcaseBusiness, FileText, PieChart, Settings, Users } from 'lucide-react';
+import { BarChart3, BookOpen, FileText, PieChart, Settings, Users } from 'lucide-react';
 import './styles.css';
 
 const toNumber = value => Number(String(value ?? 0).replace(/[wW万人天,]/g, '')) || 0;
@@ -10,14 +10,18 @@ const priorityOptions = ['紧急', '高', '一般'];
 const demandTypeOptions = ['产品立项规划', '重要用户', '临时紧急需求', 'DFx需求', '存量运营维护/差评/零星需求'];
 const demandTypeAliases = { DFX需求: 'DFx需求', DFX: 'DFx需求', DFX类需求: 'DFx需求', 存量运营维护: '存量运营维护/差评/零星需求', 差评需求: '存量运营维护/差评/零星需求', 零星需求: '存量运营维护/差评/零星需求' };
 const priorityAliases = { P0: '紧急', P1: '紧急', P2: '高', P3: '一般', P4: '一般' };
-const demandPartyOptions = ['制造', '审计', '供应', '财经', '采购', '行政', 'CBG', '部门基线（OBP/存量/差评等）', 'GPO'];
+const baselineDemandParty = '生产办公运营中心';
+const legacyBaselineDemandParty = '部门基线（OBP/存量/差评等）';
+const budgetSourceTypeOptions = ['部门基线', '其他'];
+const otherBudgetSourceOptions = ['财经', '行政', 'HR', 'ICT', '区域', 'GPO'];
+const demandPartyOptions = ['制造', '审计', '供应', '财经', '采购', '行政', 'CBG', baselineDemandParty, 'GPO'];
 const personnelTypeOptions = ['OD', 'TM', '其他'];
 const personnelPositionOptions = ['设计', '前端', '后端', '数据', 'UX', '测试', 'PM'];
 const budgetStatusOptions = ['无预算', '已承诺未获取', '已获取', '获取超期'];
 const budgetStatusAliases = { 已承诺: '已承诺未获取', 已超期: '获取超期', 预算已超期: '获取超期' };
 const isBudgetCommitted = status => status === '已承诺未获取' || status === '获取超期';
 const hasBudget = d => (d.budgetStatus || '') !== '无预算';
-const demandPartyAliases = { 部门自投: '部门基线（OBP/存量/差评等）', 部门基线: '部门基线（OBP/存量/差评等）', 部门非基线: 'GPO' };
+const demandPartyAliases = { 部门自投: baselineDemandParty, 部门基线: baselineDemandParty, [legacyBaselineDemandParty]: baselineDemandParty, [baselineDemandParty]: baselineDemandParty, 部门非基线: 'GPO' };
 const rrPattern = /^RR\d{13}$/;
 const rrInputPattern = /^(|R|RR|RR\d{0,13})$/;
 const formatRr = value => String(value ?? '').trim().toUpperCase();
@@ -26,9 +30,8 @@ const isValidRrInput = value => rrInputPattern.test(formatRr(value));
 const rrFormatText = '需求单号格式：RRYYYYMMDD随机5位数，例如 RR2026053012345';
 const validateDemand = (d, existingDemands = [], currentId = null) => {
   const demandNo = formatRr(d.demandNo);
-  if (!demandNo) return '请填写需求单号';
-  if (!isValidRr(demandNo)) return rrFormatText;
-  if (existingDemands.some(item => item.id !== currentId && formatRr(item.demandNo || item.rr) === demandNo)) return `需求单号不能重复：${demandNo}`;
+  if (demandNo && !isValidRr(demandNo)) return rrFormatText;
+  if (demandNo && existingDemands.some(item => item.id !== currentId && formatRr(item.demandNo || item.rr) === demandNo)) return `需求单号不能重复：${demandNo}`;
   return '';
 };
 const getDuplicateDemandNos = demands => {
@@ -51,6 +54,9 @@ const normalizeDemand = d => {
   const rawBudgetStatus = budgetStatusAliases[d.budgetStatus] || d.budgetStatus;
   const budgetStatus = budgetStatusOptions.includes(rawBudgetStatus) ? rawBudgetStatus : (d.committed ? '已承诺未获取' : (d.funded || toNumber(d.budget) > 0 ? '已获取' : '无预算'));
   const funded = budgetStatus !== '无预算';
+  const rawBudgetSourceType = d.budgetSourceType || (otherBudgetSourceOptions.includes(d.budgetSource) ? '其他' : '部门基线');
+  const budgetSourceType = budgetSourceTypeOptions.includes(rawBudgetSourceType) ? rawBudgetSourceType : '部门基线';
+  const budgetSource = budgetSourceType === '其他' && otherBudgetSourceOptions.includes(d.budgetSource) ? d.budgetSource : '';
   const workloadMode = d.workloadMode === 'breakdown' ? 'breakdown' : 'total';
   const breakdownDays = toNumber(d.analysis) + toNumber(d.frontend) + toNumber(d.middle) + toNumber(d.backend);
   return {
@@ -62,7 +68,10 @@ const normalizeDemand = d => {
     demandBA: d.demandBA || d.ba || '',
     demandPM: d.demandPM || d.pm || d.executor || '',
     priority: priorityAliases[d.priority] || d.priority || '一般',
-    investment: demandPartyAliases[d.investment] || d.investment || '',
+    investment: demandPartyAliases[d.investment] || d.investment || baselineDemandParty,
+    budgetSourceType,
+    budgetSource,
+    budgetPoolId: d.budgetPoolId || '',
     version: isScheduled(status) ? (d.version || '') : '',
     budgetStatus,
     budgetContact: budgetStatus !== '无预算' ? (d.budgetContact || '') : '',
@@ -231,15 +240,39 @@ function getBudgetOccupationMonth(demand) {
   return '未计划';
 }
 
+function isDepartmentBaselinePool(pool) {
+  const text = `${pool?.name || ''} ${pool?.ownerDept || ''}`;
+  return pool?.type === 'department-baseline' || text.includes('部门基线') || text.includes(legacyBaselineDemandParty) || text.includes(baselineDemandParty);
+}
+
 function matchDemandBudgetPool(demand, pools = []) {
   const normalizedPools = Array.isArray(pools) ? pools : [];
   if (demand.budgetPoolId) {
     const byId = normalizedPools.find(pool => String(pool.id) === String(demand.budgetPoolId));
     if (byId) return byId;
   }
-  const investment = String(demand.investment || '').trim();
+  if (demand.budgetSourceType === '部门基线') {
+    const baselinePool = normalizedPools.find(pool => isDepartmentBaselinePool(pool));
+    if (baselinePool) return baselinePool;
+  }
+  if (demand.budgetSourceType === '其他' && demand.budgetSource) {
+    const source = String(demand.budgetSource).trim();
+    const otherPool = normalizedPools.find(pool => pool.type === 'other' && [pool.ownerDept, pool.name].some(value => String(value || '').includes(source) || source.includes(String(value || ''))));
+    if (otherPool) return otherPool;
+  }
+  const investment = String(demandPartyAliases[demand.investment] || demand.investment || '').trim();
   if (!investment) return null;
   return normalizedPools.find(pool => [pool.ownerDept, pool.name].some(value => String(value || '').includes(investment) || investment.includes(String(value || '')))) || null;
+}
+
+function getDemandBudgetPoolInfo(demand, budget, allDemands, currentDemandId = null) {
+  const pools = Array.isArray(budget?.pools) ? budget.pools : [];
+  const pool = matchDemandBudgetPool(demand, pools);
+  if (!pool) return { pool: null, row: null, remaining: 0, overAmount: Math.max(0, toNumber(demand.budget)) };
+  const otherDemands = (Array.isArray(allDemands) ? allDemands : []).filter(item => item.id !== currentDemandId);
+  const row = buildBudgetPoolRows(otherDemands, budget).find(item => String(item.id) === String(pool.id));
+  const remaining = (row?.amount ?? getBudgetPoolAmount(pool)) - (row?.demandBudget ?? 0);
+  return { pool, row, remaining, overAmount: Math.max(0, toNumber(demand.budget) - remaining) };
 }
 
 function getBudgetPoolStatus(amount, occupied) {
@@ -272,10 +305,11 @@ function buildBudgetPoolRows(demands, budget) {
     laterDays: 0,
     noBudgetCount: 0,
     overBudgetDemandCount: 0,
+    overAmount: 0,
     demandIds: []
   }]));
   const unmatchedKey = '__unmatched__';
-  rows.set(unmatchedKey, { id: unmatchedKey, name: unmatchedBudgetPoolName, ownerDept: '未匹配', type: 'other', typeLabel: '未匹配', month: '未匹配', description: '需求方或预算池ID无法匹配预算池', amount: 0, demandCount: 0, demandBudget: 0, executionCost: 0, executedCost: 0, scheduledCost: 0, laterCost: 0, executedDays: 0, scheduledDays: 0, laterDays: 0, noBudgetCount: 0, overBudgetDemandCount: 0, demandIds: [] });
+  rows.set(unmatchedKey, { id: unmatchedKey, name: unmatchedBudgetPoolName, ownerDept: '未匹配', type: 'other', typeLabel: '未匹配', month: '未匹配', description: '需求方或预算池ID无法匹配预算池', amount: 0, demandCount: 0, demandBudget: 0, executionCost: 0, executedCost: 0, scheduledCost: 0, laterCost: 0, executedDays: 0, scheduledDays: 0, laterDays: 0, noBudgetCount: 0, overBudgetDemandCount: 0, overAmount: 0, demandIds: [] });
   demands.forEach(d => {
     const pool = matchDemandBudgetPool(d, pools);
     const key = pool ? String(pool.id) : unmatchedKey;
@@ -300,7 +334,8 @@ function buildBudgetPoolRows(demands, budget) {
     const usageRate = row.amount > 0 ? row.demandBudget / row.amount : (row.demandBudget > 0 ? Infinity : 0);
     const executionRate = row.amount > 0 ? row.executionCost / row.amount : (row.executionCost > 0 ? Infinity : 0);
     const status = getBudgetPoolStatus(row.amount, row.demandBudget);
-    return { ...row, remaining, executionRemaining, usageRate, executionRate, status, totalExecutionCost: row.executionCost, source: row.name };
+    const overAmount = Math.max(0, row.demandBudget - row.amount);
+    return { ...row, remaining, executionRemaining, usageRate, executionRate, status, overAmount, totalExecutionCost: row.executionCost, source: row.name };
   }).sort((a, b) => (a.id === unmatchedKey ? 1 : b.id === unmatchedKey ? -1 : b.demandBudget - a.demandBudget));
 }
 
@@ -349,6 +384,8 @@ function buildBudgetOccupationDemandRows(demands, budget) {
       demandId: d.demandNo || d.rr || d.id,
       source: d.source || '未填写类型',
       investment: d.investment || '未填写需求方',
+      budgetSourceType: d.budgetSourceType || '部门基线',
+      budgetSource: d.budgetSourceType === '其他' ? (d.budgetSource || '') : '',
       budgetPoolId: pool?.id || '',
       budgetPoolName: pool?.name || unmatchedBudgetPoolName,
       matchedBudgetPool: Boolean(pool),
@@ -453,7 +490,10 @@ function buildBudgetRiskRows(demands, budget) {
       daysToBudgetEta: getDaysTo(d.budgetEta),
       budgetPoolName: pool?.name || unmatchedBudgetPoolName,
       matchedBudgetPool: Boolean(pool),
+      budgetSourceType: d.budgetSourceType || '部门基线',
+      budgetSource: d.budgetSourceType === '其他' ? (d.budgetSource || '') : '',
       poolRemaining: poolRow?.remaining ?? 0,
+      poolOverAmount: Math.max(0, -(poolRow?.remaining ?? 0)),
       poolOverBudget: (poolRow?.remaining ?? 0) < 0,
       poolStatus: poolRow?.status || '无预算池'
     };
@@ -558,8 +598,8 @@ function buildRiskCategoryOption(rows) {
 }
 
 function downloadBudgetRiskCsv(rows) {
-  const headers = ['需求ID', '名称', '状态', '计划落地', '距落地天数', '人力', '预算状态', '风险等级', '命中规则', '风险说明', '建议操作', '预算缺口w'];
-  const lines = [headers.join(',')].concat(rows.map(r => [r.demandNo || r.rr || r.id, r.title, r.status, r.landingDate, Number.isFinite(r.daysToLanding) ? r.daysToLanding : '', r.days, r.budgetStatusLabel, r.riskText, r.triggeredRules.map(rule => rule.name).join('；'), r.riskReason, r.action, r.budgetGap.toFixed(1)].map(v => `"${String(v ?? '').replaceAll('"','""')}"`).join(',')));
+  const headers = ['需求ID', '名称', '状态', '计划落地', '距落地天数', '人力', '预算来源', '其他预算来源', '需求预算w', '预算状态', '预算池', '预算池剩余w', '预算池状态', '超额金额w', '风险等级', '命中规则', '风险说明', '建议操作', '预算缺口w'];
+  const lines = [headers.join(',')].concat(rows.map(r => [r.demandNo || r.rr || r.id, r.title, r.status, r.landingDate, Number.isFinite(r.daysToLanding) ? r.daysToLanding : '', r.days, r.budgetSourceType, r.budgetSource, toNumber(r.budget).toFixed(1), r.budgetStatusLabel, r.budgetPoolName, toNumber(r.poolRemaining).toFixed(1), r.poolStatus, toNumber(r.poolOverAmount).toFixed(1), r.riskText, r.triggeredRules.map(rule => rule.name).join('；'), r.riskReason, r.action, r.budgetGap.toFixed(1)].map(v => `"${String(v ?? '').replaceAll('"','""')}"`).join(',')));
   const blob = new Blob(['\ufeff' + lines.join('\n')], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'risk-dashboard.csv'; a.click();
 }
@@ -819,7 +859,7 @@ const initialDemands = [
 
 function createEmptyDemand() {
   return {
-    title: '', demandNo: '', source: '产品立项规划', investment: '部门基线（OBP/存量/差评等）', pain: '', goal: '', value: '', acceptanceCriteria: '', requester: '', demandBA: '', demandPM: '', review: '待评审', status: '待评估',
+    title: '', demandNo: '', source: '产品立项规划', investment: baselineDemandParty, budgetSourceType: '部门基线', budgetSource: '', budgetPoolId: '', pain: '', goal: '', value: '', acceptanceCriteria: '', requester: '', demandBA: '', demandPM: '', review: '待评审', status: '待评估',
     rr: '', ir: '', priority: '高', version: 'V2026.08', landingDate: '2026-08-31', days: 30,
     analysis: 5, frontend: 10, middle: 8, backend: 7, workloadMode: 'total', finalDays: 0, settlementDays: 0, funded: true, budget: 0, budgetStatus: '已承诺未获取', budgetContact: '', budgetEta: '', budgetAcquiredDate: '', committed: true
   };
@@ -926,8 +966,8 @@ const defaultPersonnel = Array.from({ length: 40 }, (_, idx) => {
 });
 
 const defaultBudget = { annualBudget: 683, consumedCost: 712, dayCost: 0.12, monthlyWorkdays: 22.5, annualWorkdays: 270, pools: [
-  { id: 'pool-baseline', name: '部门基线（OBP/存量/差评等）', ownerDept: '部门基线（OBP/存量/差评等）', type: 'department-baseline', month: '', amount: 683, description: '部门基线、OBP、存量运营和差评类预算池' },
-  ...demandPartyOptions.filter(name => name !== '部门基线（OBP/存量/差评等）').map((name, idx) => ({ id: `pool-demand-${idx + 1}`, name: `${name}预算池`, ownerDept: name, type: 'demand-side', month: '', amount: 0, description: '需求方提供预算，按需维护金额' }))
+  { id: 'pool-baseline', name: baselineDemandParty, ownerDept: baselineDemandParty, type: 'department-baseline', month: '', amount: 683, description: '部门基线、OBP、存量运营和差评类预算池' },
+  ...otherBudgetSourceOptions.map((name, idx) => ({ id: `pool-other-${idx + 1}`, name: `${name}预算池`, ownerDept: name, type: 'other', month: '', amount: 0, description: '其他预算来源，按需维护金额' }))
 ], scenarios: [
   { name: '极限低预算', addedBudget: 40, description: '仅获得少量追加预算，基本只能覆盖部分超支' },
   { name: '保守预算', addedBudget: 80, description: '获得低位预算假设' },
@@ -947,6 +987,26 @@ function loadStored(key, fallback) {
 function normalizeBudget(rawBudget) {
   const merged = { ...defaultBudget, ...(rawBudget || {}) };
   const rawPools = Array.isArray(rawBudget?.pools) && rawBudget.pools.length ? rawBudget.pools : defaultBudget.pools.map(pool => pool.id === 'pool-baseline' ? { ...pool, amount: toNumber(merged.annualBudget) || pool.amount } : pool);
+  const normalizedPools = rawPools.map((pool, idx) => {
+    const isBaseline = isDepartmentBaselinePool(pool);
+    const name = demandPartyAliases[pool.name] || pool.name || `预算池${idx + 1}`;
+    const ownerDept = demandPartyAliases[pool.ownerDept || pool.owner] || pool.ownerDept || pool.owner || '';
+    const matchedOtherSource = otherBudgetSourceOptions.find(source => [name, ownerDept].some(value => String(value || '').includes(source)));
+    return {
+      id: pool.id || `pool-${Date.now()}-${idx}`,
+      name: isBaseline ? baselineDemandParty : name,
+      ownerDept: isBaseline ? baselineDemandParty : ownerDept,
+      type: isBaseline ? 'department-baseline' : matchedOtherSource ? 'other' : budgetPoolTypeLabels[pool.type] ? pool.type : 'other',
+      month: pool.month || '',
+      amount: Math.max(0, toNumber(pool.amount ?? pool.budget ?? 0)),
+      description: pool.description || ''
+    };
+  });
+  otherBudgetSourceOptions.forEach((name, idx) => {
+    if (!normalizedPools.some(pool => pool.type === 'other' && [pool.name, pool.ownerDept].some(value => String(value || '').includes(name)))) {
+      normalizedPools.push({ id: `pool-other-${idx + 1}`, name: `${name}预算池`, ownerDept: name, type: 'other', month: '', amount: 0, description: '其他预算来源，按需维护金额' });
+    }
+  });
   return {
     ...merged,
     annualBudget: toNumber(merged.annualBudget),
@@ -955,19 +1015,11 @@ function normalizeBudget(rawBudget) {
     monthlyWorkdays: toNumber(merged.monthlyWorkdays || defaultBudget.monthlyWorkdays),
     annualWorkdays: toNumber(merged.annualWorkdays || defaultBudget.annualWorkdays),
     scenarios: Array.isArray(merged.scenarios) ? merged.scenarios.map(item => ({ ...item, addedBudget: toNumber(item.addedBudget) })) : defaultBudget.scenarios,
-    pools: rawPools.map((pool, idx) => ({
-      id: pool.id || `pool-${Date.now()}-${idx}`,
-      name: pool.name || `预算池${idx + 1}`,
-      ownerDept: pool.ownerDept || pool.owner || '',
-      type: budgetPoolTypeLabels[pool.type] ? pool.type : 'other',
-      month: pool.month || '',
-      amount: Math.max(0, toNumber(pool.amount ?? pool.budget ?? 0)),
-      description: pool.description || ''
-    }))
+    pools: normalizedPools
   };
 }
 
-const appPageIds = ['demands', 'submit', 'personnel', 'budgetManage', 'budget', 'budgetRisk', 'budgetExecution', 'manual'];
+const appPageIds = ['demands', 'personnel', 'budgetManage', 'budget', 'budgetRisk', 'budgetExecution', 'manual'];
 const getInitialPage = () => {
   const hashPage = window.location.hash.replace(/^#\/?/, '');
   const pathPage = window.location.pathname.replace(/^\//, '').split('/')[0];
@@ -1001,13 +1053,12 @@ function App() {
   const openDemandIds = (ids, label) => { setPage('demands'); setTimeout(() => window.dispatchEvent(new CustomEvent('wfp.filterDemandIds', { detail: { ids, label } })), 0); };
   const openBudgetRiskIds = (ids, label) => { setPage('budget'); setTimeout(() => window.dispatchEvent(new CustomEvent('wfp.filterRiskDemandIds', { detail: { ids, label } })), 0); };
   const nav = [
-    ['demands', FileText, '需求池'], ['submit', BriefcaseBusiness, '提交需求'], ['personnel', Users, '人员管理'], ['budgetManage', Settings, '预算管理'], ['budget', PieChart, '预算与风险分析'], ['manual', BookOpen, '操作手册']
+    ['demands', FileText, '需求管理'], ['personnel', Users, '人员管理'], ['budgetManage', Settings, '预算管理'], ['budget', PieChart, '预算与风险分析'], ['manual', BookOpen, '操作手册']
   ];
   return <div className="app">
     <aside><div className="brand"><BarChart3 size={28}/><div><b>需求及人力规划</b><span>Workforce Planning</span></div></div>{nav.map(([id, Icon, label]) => <button key={id} className={page===id?'active':''} onClick={()=>setPage(id)}><Icon size={18}/>{label}</button>)}</aside>
     <main>
-      {page === 'demands' && <DemandPool demands={demands} setDemands={setDemands} totalDays={totalDays} unfundedDays={unfundedDays}/>}
-      {page === 'submit' && <DemandSubmit demands={demands} setDemands={setDemands} goPool={()=>setPage('demands')}/>}
+      {page === 'demands' && <DemandPool demands={demands} setDemands={setDemands} budget={budget} totalDays={totalDays} unfundedDays={unfundedDays}/>}
       {page === 'personnel' && <Personnel personnel={personnel} setPersonnel={setPersonnel} demands={demands} budget={budget} openDemand={openDemand}/>}
       {page === 'budgetManage' && <BudgetManagementPage demands={demands} budget={budget} setBudget={setBudget} openDemandIds={openDemandIds}/>}
       {['budget', 'budgetRisk', 'budgetExecution'].includes(page) && <BudgetRiskAnalysisPage demands={demands} budget={budget} setBudget={setBudget} openDemand={openDemand} openDemandFilter={openDemandFilter} openDemandIds={openDemandIds}/>}
@@ -1027,10 +1078,10 @@ function Dashboard({demands, totalDays, compact = false}) {
 }
 
 const demandColumnLabels = {
-  title: '需求', demandNo: '需求单号', requester: '提出人', demandBA: '需求BA', demandPM: '需求PM', source: '类型', acceptanceCriteria: '验收标准', investment: '需求方', priority: '优先级', landingDate: '计划落地日期', budgetStatus: '预算状态', budgetAcquiredDate: '预算获取日期', budgetContact: '预算接口人', budgetEta: '预算承诺日期', days: '预估人天', finalDays: '决算人力', version: '版本', status: '需求状态', settlementDays: '结算人力'
+  title: '需求', demandNo: '需求单号', requester: '提出人', demandBA: '需求BA', demandPM: '需求PM', source: '类型', acceptanceCriteria: '验收标准', investment: '需求方', priority: '优先级', landingDate: '计划落地日期', budgetStatus: '预算状态', budgetSourceType: '预算来源', budgetSource: '其他预算来源', budgetAcquiredDate: '预算获取日期', budgetContact: '预算接口人', budgetEta: '预算承诺日期', days: '预估人天', finalDays: '决算人力', version: '版本', status: '需求状态', settlementDays: '结算人力'
 };
 
-function DemandPool({demands, setDemands, totalDays, unfundedDays}) {
+function DemandPool({demands, setDemands, budget, totalDays, unfundedDays}) {
   const [filter, setFilter] = useState('全部');
   const [keyword, setKeyword] = useState('');
   const [columnFilters, setColumnFilters] = useState({});
@@ -1040,9 +1091,13 @@ function DemandPool({demands, setDemands, totalDays, unfundedDays}) {
   const [filteredIds, setFilteredIds] = useState(null);
   const [filteredIdsLabel, setFilteredIdsLabel] = useState('');
   const [expandedId, setExpandedId] = useState(null);
+  const [editingDemandId, setEditingDemandId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null);
+  const [showSubmitModal, setShowSubmitModal] = useState(false);
+  const [editError, setEditError] = useState('');
   const [importMsg, setImportMsg] = useState('');
   const [importDraft, setImportDraft] = useState(null);
-  const defaultColumnKeys = ['title','demandNo','requester','demandBA','demandPM','source','acceptanceCriteria','investment','priority','landingDate','budgetStatus','budgetAcquiredDate','budgetContact','budgetEta','days','finalDays','version','status','settlementDays'];
+  const defaultColumnKeys = ['title','demandNo','requester','demandBA','demandPM','source','acceptanceCriteria','investment','priority','landingDate','budgetStatus','budgetSourceType','budgetSource','budgetAcquiredDate','budgetContact','budgetEta','days','finalDays','version','status','settlementDays'];
   const [columnOrder, setColumnOrder] = useState(() => {
     const stored = loadStored('wfp.demandColumnOrder', defaultColumnKeys);
     return [...stored.filter(key => defaultColumnKeys.includes(key)), ...defaultColumnKeys.filter(key => !stored.includes(key))];
@@ -1108,7 +1163,7 @@ function DemandPool({demands, setDemands, totalDays, unfundedDays}) {
   };
   const monthFiltered = filtered.filter(monthInRange);
   const query = keyword.trim().toLowerCase();
-  const fullTextFields = ['title','demandNo','source','acceptanceCriteria','investment','requester','version','landingDate','budgetContact','budgetEta','budgetStatus','rr','ir','priority','review','status'];
+  const fullTextFields = ['title','demandNo','source','acceptanceCriteria','investment','budgetSourceType','budgetSource','requester','version','landingDate','budgetContact','budgetEta','budgetStatus','rr','ir','priority','review','status'];
   const cellText = (d, key) => key === 'investment' ? (d.investment || '未填写需求方') : String(d[key] ?? '');
   const list = monthFiltered.filter(d => {
     const matchesIds = !filteredIds || filteredIds.includes(d.id);
@@ -1157,10 +1212,46 @@ function DemandPool({demands, setDemands, totalDays, unfundedDays}) {
       return ds.map(d => d.id === id ? normalizeDemand({ ...d, [key]: value }) : d);
     });
   };
+  const openEditDemand = demand => {
+    const normalized = normalizeDemand(demand);
+    setEditingDemandId(demand.id);
+    setEditDraft(normalized);
+    setEditError('');
+  };
+  const closeEditDemand = () => {
+    setEditingDemandId(null);
+    setEditDraft(null);
+    setEditError('');
+  };
+  const setEditDraftField = (key, value) => {
+    if ((key === 'rr' || key === 'demandNo') && !isValidRrInput(value)) return;
+    setEditDraft(draft => {
+      if (!draft) return draft;
+      const next = { ...draft, [key]: value };
+      if (key === 'budgetSourceType') {
+        next.budgetSource = value === '其他' ? (draft.budgetSource || otherBudgetSourceOptions[0]) : '';
+        next.budgetPoolId = '';
+      }
+      if (key === 'budgetSource') next.budgetPoolId = '';
+      return normalizeDemand(next);
+    });
+    setEditError('');
+  };
+  const saveEditDemand = () => {
+    const normalized = normalizeDemand(editDraft || {});
+    const error = validateDemand(normalized, demands, editingDemandId);
+    if (error) {
+      setEditError(error);
+      return;
+    }
+    setDemands(ds => ds.map(d => d.id === editingDemandId ? { ...normalized, id: d.id } : d));
+    closeEditDemand();
+  };
   const deleteDemand = id => {
     if (confirm('确认删除该需求？')) {
       setDemands(ds => ds.filter(x => x.id !== id));
       setExpandedId(current => current === id ? null : current);
+      if (editingDemandId === id) closeEditDemand();
     }
   };
   React.useEffect(() => {
@@ -1237,7 +1328,7 @@ function DemandPool({demands, setDemands, totalDays, unfundedDays}) {
       const imported = parseDemandCsv(importDraft.text, importDraft.mapping).map(d => normalizeDemand(d));
       const duplicateInFile = getDuplicateDemandNos(imported);
       if (duplicateInFile.length) throw new Error(`导入文件内需求单号重复：${duplicateInFile.join('、')}`);
-      const duplicateExisting = imported.map(d => formatRr(d.demandNo || d.rr)).filter(demandNo => demands.some(existing => formatRr(existing.demandNo || existing.rr) === demandNo));
+      const duplicateExisting = imported.map(d => formatRr(d.demandNo || d.rr)).filter(demandNo => demandNo && demands.some(existing => formatRr(existing.demandNo || existing.rr) === demandNo));
       if (duplicateExisting.length) throw new Error(`需求单号已存在，不能重复导入：${[...new Set(duplicateExisting)].join('、')}`);
       setDemands(ds => [...ds, ...imported.map((d, idx) => ({ ...d, id: Date.now() + idx }))]);
       setImportMsg(`已按字段映射导入 ${imported.length} 条需求`);
@@ -1264,45 +1355,56 @@ function DemandPool({demands, setDemands, totalDays, unfundedDays}) {
     };
   }, [columns.length, list.length, expandedId, columnFilters]);
   const demandPartyChoices = value => [...new Set([...demandPartyOptions, value].filter(Boolean))];
+  const editBudgetPoolInfo = editDraft ? getDemandBudgetPoolInfo(editDraft, budget, demands, editingDemandId) : null;
+  const displayDemandValue = (d, key) => {
+    if (key === 'investment') return d.investment || '未填写需求方';
+    if (key === 'budgetSource') return d.budgetSourceType === '其他' ? (d.budgetSource || '-') : '-';
+    if (['days', 'finalDays', 'settlementDays'].includes(key)) return toNumber(d[key]);
+    return d[key] || '-';
+  };
+  const renderDetailItem = (label, value, className = '') => <div className={`readonly-detail-item ${className}`}><span>{label}</span><b>{value || '-'}</b></div>;
   const renderDemandCell = (d, key) => {
     if (key === 'title') return <button className="title-link" onClick={()=>setExpandedId(expandedId === d.id ? null : d.id)}>{d.title || '未填写需求名称'}</button>;
-    if (key === 'demandNo') return <div className="stacked-control"><input style={fitStyle('demandNo')} className={isValidRr(d.demandNo) ? '' : 'invalid'} value={d.demandNo} placeholder="RR2026053012345" onChange={e=>updateDemand(d.id,'demandNo',e.target.value)}/>{!isValidRr(d.demandNo) && <small className="field-error">{rrFormatText}</small>}</div>;
-    if (key === 'source') return <select style={fitStyle('source')} className={d.source === '临时紧急需求' ? 'danger-field' : ''} value={d.source} onChange={e=>updateDemand(d.id,'source',e.target.value)}>{demandTypeOptions.map(item => <option key={item} value={item}>{item}</option>)}</select>;
-    if (key === 'investment') return <select style={fitStyle('investment')} value={d.investment} onChange={e=>updateDemand(d.id,'investment',e.target.value)}>{demandPartyChoices(d.investment).map(item => <option key={item} value={item}>{item}</option>)}</select>;
-    if (key === 'priority') return <select style={fitStyle('priority')} value={d.priority} onChange={e=>updateDemand(d.id,'priority',e.target.value)}>{priorityOptions.map(priority => <option key={priority}>{priority}</option>) }</select>;
-    if (key === 'landingDate') return <input style={fitStyle('landingDate')} type="date" value={d.landingDate || ''} onChange={e=>updateDemand(d.id,'landingDate',e.target.value)}/>;
-    if (key === 'budgetStatus') return <select style={fitStyle('budgetStatus')} value={d.budgetStatus || '无预算'} onChange={e=>updateDemand(d.id,'budgetStatus',e.target.value)}>{budgetStatusOptions.map(status => <option key={status}>{status}</option>)}</select>;
-    if (key === 'budgetAcquiredDate') return <input style={fitStyle('budgetAcquiredDate')} type="date" value={d.budgetAcquiredDate || ''} disabled={d.budgetStatus !== '已获取'} onChange={e=>updateDemand(d.id,'budgetAcquiredDate',e.target.value)}/>;
-    if (key === 'budgetContact') return <input style={fitStyle('budgetContact')} value={d.budgetContact || ''} disabled={!hasBudget(d)} placeholder={hasBudget(d) ? '填写接口人' : '有预算后填写'} onChange={e=>updateDemand(d.id,'budgetContact',e.target.value)}/>;
-    if (key === 'budgetEta') return <input style={fitStyle('budgetEta')} type="date" value={d.budgetEta || ''} disabled={!isBudgetCommitted(d.budgetStatus)} onChange={e=>updateDemand(d.id,'budgetEta',e.target.value)}/>;
-    if (key === 'days') return <input style={fitStyle('days')} type="number" value={toNumber(d.days)} disabled={d.workloadMode === 'breakdown'} onChange={e=>updateDemand(d.id,'days',Number(e.target.value))}/>;
-    if (key === 'finalDays') return <input style={fitStyle('finalDays')} type="number" value={toNumber(d.finalDays)} disabled={d.status !== '已验收'} placeholder={d.status === '已验收' ? '填写决算人力' : '验收后填写'} onChange={e=>updateDemand(d.id,'finalDays',Number(e.target.value))}/>;
-    if (key === 'version') return <input style={fitStyle('version')} value={d.version} disabled={!isScheduled(d.status)} placeholder={isScheduled(d.status) ? '填写版本' : '排期后填写'} onChange={e=>updateDemand(d.id,'version',e.target.value)}/>;
-    if (key === 'status') return <select style={fitStyle('status')} value={d.status} onChange={e=>updateDemand(d.id,'status',e.target.value)}>{demandStatusOptions.map(status => <option key={status}>{status}</option>)}</select>;
-    if (key === 'settlementDays') return <input style={fitStyle('settlementDays')} type="number" value={toNumber(d.settlementDays)} disabled={d.status !== '已验收'} placeholder={d.status === '已验收' ? '填写结算人力' : '验收后填写'} onChange={e=>updateDemand(d.id,'settlementDays',Number(e.target.value))}/>;
-    if (key === 'acceptanceCriteria') return <textarea className="table-textarea" style={fitStyle(key)} value={d[key] || ''} onChange={e=>updateDemand(d.id,key,e.target.value)}/>;
-    return <input style={fitStyle(key)} value={d[key] || ''} onChange={e=>updateDemand(d.id,key,e.target.value)}/>;
+    if (key === 'demandNo') {
+      const demandNo = formatRr(d.demandNo);
+      return <div className="stacked-control"><span>{demandNo || '-'}</span>{demandNo && !isValidRr(demandNo) && <small className="field-error">{rrFormatText}</small>}</div>;
+    }
+    const value = displayDemandValue(d, key);
+    const classes = ['acceptanceCriteria', 'pain', 'goal', 'value'].includes(key) ? 'readonly-text-cell' : '';
+    return <span className={classes}>{value}</span>;
   };
   return <>
-    <Header title="需求池" desc="集中查看、筛选、导入和维护下月需求清单。"/>
+    <Header title="需求管理" desc="集中提交、查看、筛选、导入和维护需求清单。"/>
     <Dashboard demands={monthFiltered} totalDays={dashboardTotalDays} compact/>
     <div className="toolbar demand-toolbar">
       <div className="actions"><input className="search-input" placeholder="全文检索：需求/单号/提出人/版本/RR/IR/状态" value={keyword} onChange={e=>setKeyword(e.target.value)}/><span className="month-filter-label">计划落地月份：</span><label className="month-filter-control"><span>开始月份</span><MonthSelect value={monthStart} onChange={setMonthStart} options={monthOptions}/></label><label className="month-filter-control"><span>结束月份</span><MonthSelect value={monthEnd} onChange={setMonthEnd} options={monthOptions}/></label></div>
-      <div className="actions"><button onClick={clearAllFilters}>清除筛选</button><button onClick={()=>setColumnOrder(defaultColumnKeys)}>恢复默认列顺序</button><label className="import-btn">导入<input type="file" accept=".csv,text/csv" onChange={onImport}/></label><button onClick={()=>downloadCsv(demands)}>导出</button></div>
+      <div className="actions"><button onClick={()=>setShowSubmitModal(true)}>提交需求</button><button onClick={clearAllFilters}>清除筛选</button><button onClick={()=>setColumnOrder(defaultColumnKeys)}>恢复默认列顺序</button><label className="import-btn">导入<input type="file" accept=".csv,text/csv" onChange={onImport}/></label><button onClick={()=>downloadCsv(demands)}>导出</button></div>
     </div>
     {importMsg && <div className="notice">{importMsg}</div>}
     {filteredIds && <div className="notice">{filteredIdsLabel}：当前展示 {list.length} 条匹配需求 <button className="link neutral" onClick={clearAllFilters}>清除筛选</button></div>}
     {importDraft && <section className="card import-mapping-card"><h2>导入字段映射</h2><p className="muted">系统已推荐自动映射结果。带 * 的字段为必填字段，请检查不准确的字段，改为正确的CSV表头，或选择“不导入”。</p><div className="import-mapping-table"><table><thead><tr>{demandImportFields.map(([key, label]) => <th key={key} title={label}><span className={requiredDemandImportFields.has(key) ? 'required-label' : ''}>{label}</span></th>)}</tr><tr>{demandImportFields.map(([key, label]) => <th key={key}><select title={importDraft.mapping[key] || '不导入'} value={importDraft.mapping[key] || ''} onChange={e=>updateImportMapping(key, e.target.value)}><option value="">不导入</option>{importDraft.headers.map(header => <option key={header} value={header} title={header}>{header}</option>)}</select></th>)}</tr></thead><tbody>{importDraft.previewRows?.length ? importDraft.previewRows.map((row, idx) => <tr key={idx}>{demandImportFields.map(([key, label]) => { const value = importPreviewValue(row, key); return <td key={key} title={value}>{value}</td>; })}</tr>) : <tr><td colSpan={demandImportFields.length}>没有可预览的数据行</td></tr>}</tbody></table></div><div className="modal-actions"><button className="secondary" onClick={()=>setImportDraft(null)}>取消</button><button className="primary inline" onClick={confirmImport}>按映射导入</button></div></section>}
     <datalist id="demand-party-options">{demandPartyOptions.map(item => <option key={item} value={item}/>)}</datalist>
+    {showSubmitModal && <DemandSubmit demands={demands} setDemands={setDemands} budget={budget} onClose={()=>setShowSubmitModal(false)} embedded/>}
+    {editDraft && <div className="modal-backdrop" onClick={closeEditDemand}><div className="modal-card demand-edit-modal" onClick={e=>e.stopPropagation()}>
+      <div className="modal-header"><h2>编辑需求</h2><button className="link neutral" onClick={closeEditDemand}>关闭</button></div>
+      {editError && <div className="field-error">{editError}</div>}
+      <div className="submit-layout">
+        <section className="submit-section primary-info"><h2>基础信息</h2><div className="submit-grid five"><label><span className="required-label">需求名称</span><input value={editDraft.title || ''} onChange={e=>setEditDraftField('title',e.target.value)}/></label><label>需求单号<input className={editDraft.demandNo && !isValidRr(editDraft.demandNo) ? 'invalid' : ''} value={editDraft.demandNo || ''} placeholder="RR2026053012345" onChange={e=>setEditDraftField('demandNo',e.target.value)}/>{editDraft.demandNo && !isValidRr(editDraft.demandNo) && <small className="field-error">{rrFormatText}</small>}</label><label><span className="required-label">提出人</span><input value={editDraft.requester || ''} onChange={e=>setEditDraftField('requester',e.target.value)}/></label><label>需求BA<input value={editDraft.demandBA || ''} onChange={e=>setEditDraftField('demandBA',e.target.value)}/></label><label>需求PM<input value={editDraft.demandPM || ''} onChange={e=>setEditDraftField('demandPM',e.target.value)}/></label><label><span className="required-label">需求方</span><select value={editDraft.investment || ''} onChange={e=>setEditDraftField('investment',e.target.value)}>{demandPartyChoices(editDraft.investment).map(item => <option key={item} value={item}>{item}</option>)}</select></label><label><span className="required-label">预算来源</span><select value={editDraft.budgetSourceType || '部门基线'} onChange={e=>setEditDraftField('budgetSourceType',e.target.value)}>{budgetSourceTypeOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label>{editDraft.budgetSourceType === '其他' && <label><span className="required-label">其他预算来源</span><select value={editDraft.budgetSource || otherBudgetSourceOptions[0]} onChange={e=>setEditDraftField('budgetSource',e.target.value)}>{otherBudgetSourceOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label>}<div className={`budget-pool-hint ${editBudgetPoolInfo?.overAmount > 0 ? 'over' : ''}`}>{editBudgetPoolInfo?.pool ? <>扣减预算池：{editBudgetPoolInfo.pool.name}，剩余额度 {toNumber(editBudgetPoolInfo.remaining).toFixed(1)}w{editBudgetPoolInfo.overAmount > 0 && <small className="field-error">当前需求预算超出剩余额度 {toNumber(editBudgetPoolInfo.overAmount).toFixed(1)}w</small>}</> : '未匹配预算池，请在预算管理维护对应预算池'}</div></div></section>
+        <section className="submit-section"><h2>分类与排期</h2><div className="submit-grid five"><label>类型<select className={editDraft.source === '临时紧急需求' ? 'danger-field' : ''} value={editDraft.source || '产品立项规划'} onChange={e=>setEditDraftField('source',e.target.value)}>{demandTypeOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label><label>优先级<select value={editDraft.priority || '一般'} onChange={e=>setEditDraftField('priority',e.target.value)}>{priorityOptions.map(priority => <option key={priority}>{priority}</option>)}</select></label><label>需求状态<select value={editDraft.status || '待评估'} onChange={e=>setEditDraftField('status',e.target.value)}>{demandStatusOptions.map(status => <option key={status}>{status}</option>)}</select></label><label>版本<input value={editDraft.version || ''} disabled={!isScheduled(editDraft.status)} placeholder={isScheduled(editDraft.status) ? '填写版本' : '排期后填写'} onChange={e=>setEditDraftField('version',e.target.value)}/></label><label>计划落地日期<input type="date" value={editDraft.landingDate || ''} onChange={e=>setEditDraftField('landingDate',e.target.value)}/></label></div></section>
+        <div className="submit-stacked-sections"><section className="submit-section"><h2>预算信息</h2><div className="submit-grid four"><label>预算状态<select value={editDraft.budgetStatus || '无预算'} onChange={e=>setEditDraftField('budgetStatus',e.target.value)}>{budgetStatusOptions.map(status => <option key={status}>{status}</option>)}</select></label><label>预算金额w<input type="number" value={toNumber(editDraft.budget)} disabled={!hasBudget(editDraft)} onChange={e=>setEditDraftField('budget',Number(e.target.value))}/></label><label>预算接口人<input value={editDraft.budgetContact || ''} disabled={!hasBudget(editDraft)} placeholder={hasBudget(editDraft) ? '填写接口人' : '有预算后填写'} onChange={e=>setEditDraftField('budgetContact',e.target.value)}/></label><label>预算承诺日期<input type="date" value={editDraft.budgetEta || ''} disabled={!isBudgetCommitted(editDraft.budgetStatus)} onChange={e=>setEditDraftField('budgetEta',e.target.value)}/></label><label>预算获取日期（SMP系统）<input type="date" value={editDraft.budgetAcquiredDate || ''} disabled={editDraft.budgetStatus !== '已获取'} onChange={e=>setEditDraftField('budgetAcquiredDate',e.target.value)}/></label></div></section><section className="submit-section"><h2>工作量信息</h2><WorkloadFields value={editDraft} set={setEditDraftField} showSettlement/></section></div>
+        <section className="submit-section"><h2>需求说明</h2><div className="submit-grid four textareas"><label>当前业务痛点<textarea value={editDraft.pain || ''} onChange={e=>setEditDraftField('pain',e.target.value)}/></label><label>需求目标<textarea value={editDraft.goal || ''} onChange={e=>setEditDraftField('goal',e.target.value)}/></label><label>需求价值<textarea value={editDraft.value || ''} onChange={e=>setEditDraftField('value',e.target.value)}/></label><label>验收标准<textarea value={editDraft.acceptanceCriteria || ''} onChange={e=>setEditDraftField('acceptanceCriteria',e.target.value)}/></label></div></section>
+      </div>
+      <div className="modal-actions"><button className="secondary" onClick={closeEditDemand}>取消</button><button className="primary inline" onClick={saveEditDemand}>保存</button></div>
+    </div></div>}
     <div className="scroll-hint">表格可横向拖动查看全部字段，列宽可拖拽调整，表头可拖拽调整列顺序</div>
     <div className="table-scroll-proxy" ref={topScrollRef} style={scrollProxyStyle} onPointerDown={startScrollDrag} onPointerMove={moveScrollDrag} onPointerUp={endScrollDrag} onPointerCancel={endScrollDrag}><div className="table-scroll-thumb" style={scrollThumbStyle}/></div>
     <div className="card table-card demand-table-card" ref={tableScrollRef} onScroll={updateFloatingScrollbar}><table ref={tableRef}><thead><tr>{columns.map(column => <th key={column.key} style={fitStyle(column.key)} draggable className={`draggable-th ${column.key === 'acceptanceCriteria' ? 'acceptance-criteria-col' : ''} ${draggingColumn === column.key ? 'dragging-th' : ''} ${dropTarget?.key === column.key ? 'drop-target-th' : ''}`} onDragStart={e=>{ setDraggingColumn(column.key); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', column.key); }} onDragOver={e=>{ e.preventDefault(); const position = e.nativeEvent.offsetX > e.currentTarget.offsetWidth / 2 ? 'after' : 'before'; setDropTarget({ key: column.key, position }); }} onDrop={e=>{ e.preventDefault(); moveColumn(e.dataTransfer.getData('text/plain') || draggingColumn, column.key, dropTarget?.position || 'before'); setDraggingColumn(''); setDropTarget(null); }} onDragEnd={()=>{ setDraggingColumn(''); setDropTarget(null); }}><div className="th-filter"><span className={requiredDemandImportFields.has(column.key) ? 'required-label' : ''}><span className="column-drag-handle">↕</span>{column.label}<button className="sort-btn" draggable={false} onClick={e=>{ e.stopPropagation(); toggleDateSort(column.key); }}>{dateSort.key === column.key ? (dateSort.direction === 'asc' ? '↑' : '↓') : '↕'}</button></span><input style={fitStyle(column.key)} value={columnFilters[column.key] || ''} placeholder="筛选" onChange={e=>setColumnFilter(column.key, e.target.value)}/></div></th>)}<th>操作</th></tr></thead><tbody>{list.map(d => <React.Fragment key={d.id}>
-      <tr id={`demand-row-${d.id}`}>{columns.map(column => <td key={column.key} className={column.key === 'acceptanceCriteria' ? 'acceptance-criteria-col' : ''} style={fitStyle(column.key)}>{renderDemandCell(d, column.key)}</td>)}<td><button className="link" onClick={()=>deleteDemand(d.id)}>删除</button></td></tr>
+      <tr id={`demand-row-${d.id}`}>{columns.map(column => <td key={column.key} className={column.key === 'acceptanceCriteria' ? 'acceptance-criteria-col' : ''} style={fitStyle(column.key)}>{renderDemandCell(d, column.key)}</td>)}<td><button className="link neutral" onClick={()=>openEditDemand(d)}>编辑</button><button className="link" onClick={()=>deleteDemand(d.id)}>删除</button></td></tr>
       {expandedId === d.id && <tr className="detail-row"><td colSpan={columns.length + 1}><div className="submit-layout detail-submit-layout">
-        <section className="submit-section primary-info"><h2>基础信息</h2><div className="submit-grid five"><label><span className="required-label">需求名称</span><input value={d.title} onChange={e=>updateDemand(d.id,'title',e.target.value)}/></label><label><span className="required-label">需求单号</span><input className={isValidRr(d.demandNo) ? '' : 'invalid'} value={d.demandNo} placeholder="RR2026053012345" onChange={e=>updateDemand(d.id,'demandNo',e.target.value)}/>{!isValidRr(d.demandNo) && <small className="field-error">{rrFormatText}</small>}</label><label><span className="required-label">提出人</span><input value={d.requester} onChange={e=>updateDemand(d.id,'requester',e.target.value)}/></label><label>需求BA<input value={d.demandBA || ''} onChange={e=>updateDemand(d.id,'demandBA',e.target.value)}/></label><label>需求PM<input value={d.demandPM || ''} onChange={e=>updateDemand(d.id,'demandPM',e.target.value)}/></label><label><span className="required-label">需求方</span><select value={d.investment} onChange={e=>updateDemand(d.id,'investment',e.target.value)}>{demandPartyChoices(d.investment).map(item => <option key={item} value={item}>{item}</option>)}</select></label></div></section>
-        <section className="submit-section"><h2>分类与排期</h2><div className="submit-grid five"><label>类型<select className={d.source === '临时紧急需求' ? 'danger-field' : ''} value={d.source} onChange={e=>updateDemand(d.id,'source',e.target.value)}>{demandTypeOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label><label>优先级<select value={d.priority} onChange={e=>updateDemand(d.id,'priority',e.target.value)}>{priorityOptions.map(priority => <option key={priority}>{priority}</option>) }</select></label><label>需求状态<select value={d.status} onChange={e=>updateDemand(d.id,'status',e.target.value)}>{demandStatusOptions.map(status => <option key={status}>{status}</option>)}</select></label><label>版本<input value={d.version} disabled={!isScheduled(d.status)} placeholder={isScheduled(d.status) ? '填写版本' : '排期后填写'} onChange={e=>updateDemand(d.id,'version',e.target.value)}/></label><label>计划落地日期<input type="date" value={d.landingDate || ''} onChange={e=>updateDemand(d.id,'landingDate',e.target.value)}/></label></div></section>
-        <div className="submit-two-cols"><section className="submit-section"><h2>预算信息</h2><div className="submit-grid four"><label>预算状态<select value={d.budgetStatus || '无预算'} onChange={e=>updateDemand(d.id,'budgetStatus',e.target.value)}>{budgetStatusOptions.map(status => <option key={status}>{status}</option>)}</select></label><label>预算金额w<input type="number" value={toNumber(d.budget)} disabled={!hasBudget(d)} onChange={e=>updateDemand(d.id,'budget',Number(e.target.value))}/></label><label>预算接口人<input value={d.budgetContact} disabled={!hasBudget(d)} placeholder={hasBudget(d) ? '填写接口人' : '有预算后填写'} onChange={e=>updateDemand(d.id,'budgetContact',e.target.value)}/></label><label>预算承诺日期<input type="date" value={d.budgetEta || ''} disabled={!isBudgetCommitted(d.budgetStatus)} onChange={e=>updateDemand(d.id,'budgetEta',e.target.value)}/></label><label>预算获取日期（SMP系统）<input type="date" value={d.budgetAcquiredDate || ''} disabled={d.budgetStatus !== '已获取'} onChange={e=>updateDemand(d.id,'budgetAcquiredDate',e.target.value)}/></label></div></section><section className="submit-section"><h2>工作量信息</h2><WorkloadFields value={d} set={(key, val)=>updateDemand(d.id, key, val)} showSettlement/></section></div>
-        <section className="submit-section"><h2>需求说明</h2><div className="submit-grid four textareas"><label>当前业务痛点<textarea value={d.pain} onChange={e=>updateDemand(d.id,'pain',e.target.value)}/></label><label>需求目标<textarea value={d.goal} onChange={e=>updateDemand(d.id,'goal',e.target.value)}/></label><label>需求价值<textarea value={d.value} onChange={e=>updateDemand(d.id,'value',e.target.value)}/></label><label className="wide-2">验收标准<textarea value={d.acceptanceCriteria || ''} onChange={e=>updateDemand(d.id,'acceptanceCriteria',e.target.value)}/></label></div></section>
+        <section className="submit-section primary-info"><div className="modal-header"><h2>只读详情</h2><button className="link neutral" onClick={()=>openEditDemand(d)}>编辑</button></div><div className="readonly-detail-grid">{renderDetailItem('需求名称', d.title)}{renderDetailItem('需求单号', formatRr(d.demandNo))}{renderDetailItem('提出人', d.requester)}{renderDetailItem('需求BA', d.demandBA)}{renderDetailItem('需求PM', d.demandPM)}{renderDetailItem('需求方', displayDemandValue(d, 'investment'))}{renderDetailItem('预算来源', d.budgetSourceType)}{renderDetailItem('其他预算来源', displayDemandValue(d, 'budgetSource'))}</div></section>
+        <section className="submit-section"><h2>分类与排期</h2><div className="readonly-detail-grid">{renderDetailItem('类型', d.source)}{renderDetailItem('优先级', d.priority)}{renderDetailItem('需求状态', d.status)}{renderDetailItem('版本', d.version)}{renderDetailItem('计划落地日期', d.landingDate)}</div></section>
+        <div className="submit-stacked-sections"><section className="submit-section"><h2>预算信息</h2><div className="readonly-detail-grid">{renderDetailItem('预算状态', d.budgetStatus)}{renderDetailItem('预算金额w', toNumber(d.budget))}{renderDetailItem('预算接口人', d.budgetContact)}{renderDetailItem('预算承诺日期', d.budgetEta)}{renderDetailItem('预算获取日期', d.budgetAcquiredDate)}</div></section><section className="submit-section"><h2>工作量信息</h2><div className="readonly-detail-grid">{renderDetailItem('填写方式', d.workloadMode === 'breakdown' ? '按分项' : '按总量')}{renderDetailItem('总人天', toNumber(d.days))}{renderDetailItem('分析', toNumber(d.analysis))}{renderDetailItem('前端', toNumber(d.frontend))}{renderDetailItem('中台', toNumber(d.middle))}{renderDetailItem('后台', toNumber(d.backend))}{renderDetailItem('结算人力', toNumber(d.settlementDays))}{renderDetailItem('决算人力', toNumber(d.finalDays))}</div></section></div>
+        <section className="submit-section"><h2>需求说明</h2><div className="readonly-detail-grid textareas">{renderDetailItem('当前业务痛点', d.pain, 'wide')}{renderDetailItem('需求目标', d.goal, 'wide')}{renderDetailItem('需求价值', d.value, 'wide')}{renderDetailItem('验收标准', d.acceptanceCriteria, 'wide')}</div></section>
       </div></td></tr>}
     </React.Fragment>)}</tbody></table></div>
   </>;
@@ -1320,12 +1422,21 @@ function WorkloadFields({ value, set, showSettlement = false }) {
   </div>;
 }
 
-function DemandSubmit({demands, setDemands, goPool}) {
+function DemandSubmit({demands, setDemands, budget, goPool, onClose, embedded = false}) {
   const [form, setForm] = useState(createEmptyDemand);
   const set = (k,v)=>{
     if ((k === 'rr' || k === 'demandNo') && !isValidRrInput(v)) return;
-    setForm(f=>normalizeDemand({...f,[k]:v}));
+    setForm(f=>{
+      const next = { ...f, [k]: v };
+      if (k === 'budgetSourceType') {
+        next.budgetSource = v === '其他' ? (f.budgetSource || otherBudgetSourceOptions[0]) : '';
+        next.budgetPoolId = '';
+      }
+      if (k === 'budgetSource') next.budgetPoolId = '';
+      return normalizeDemand(next);
+    });
   };
+  const budgetPoolInfo = getDemandBudgetPoolInfo(form, budget, demands);
   const submit = () => {
     const error = validateDemand(form, demands);
     if (error) {
@@ -1333,15 +1444,18 @@ function DemandSubmit({demands, setDemands, goPool}) {
       return;
     }
     setDemands(ds=>[...ds,{...normalizeDemand(form),id:Date.now()}]);
-    goPool();
+    onClose?.();
+    goPool?.();
   };
-  return <><Header title="提交需求" desc="按结构化表单一次性登记需求核心信息。"/><div className="submit-layout card submit-card">
-    <section className="submit-section primary-info"><h2>基础信息</h2><div className="submit-grid five"><label><RequiredLabel>需求名称</RequiredLabel><input value={form.title} onChange={e=>set('title',e.target.value)}/></label><label><RequiredLabel>需求单号</RequiredLabel><input className={form.demandNo && !isValidRr(form.demandNo) ? 'invalid' : ''} value={form.demandNo} placeholder="RR2026053012345" onChange={e=>set('demandNo',e.target.value)}/>{form.demandNo && !isValidRr(form.demandNo) && <small className="field-error">{rrFormatText}</small>}</label><label><RequiredLabel>提出人</RequiredLabel><input value={form.requester} onChange={e=>set('requester',e.target.value)}/></label><label>需求BA<input value={form.demandBA || ''} onChange={e=>set('demandBA',e.target.value)}/></label><label>需求PM<input value={form.demandPM || ''} onChange={e=>set('demandPM',e.target.value)}/></label><label><RequiredLabel>需求方</RequiredLabel><select value={form.investment} onChange={e=>set('investment',e.target.value)}>{demandPartyOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label></div></section>
+  const content = <div className="submit-layout card submit-card">
+    <section className="submit-section primary-info"><h2>基础信息</h2><div className="submit-grid five"><label><RequiredLabel>需求名称</RequiredLabel><input value={form.title} onChange={e=>set('title',e.target.value)}/></label><label>需求单号<input className={form.demandNo && !isValidRr(form.demandNo) ? 'invalid' : ''} value={form.demandNo} placeholder="RR2026053012345" onChange={e=>set('demandNo',e.target.value)}/>{form.demandNo && !isValidRr(form.demandNo) && <small className="field-error">{rrFormatText}</small>}</label><label><RequiredLabel>提出人</RequiredLabel><input value={form.requester} onChange={e=>set('requester',e.target.value)}/></label><label>需求BA<input value={form.demandBA || ''} onChange={e=>set('demandBA',e.target.value)}/></label><label>需求PM<input value={form.demandPM || ''} onChange={e=>set('demandPM',e.target.value)}/></label><label><RequiredLabel>需求方</RequiredLabel><select value={form.investment} onChange={e=>set('investment',e.target.value)}>{demandPartyOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label><label><RequiredLabel>预算来源</RequiredLabel><select value={form.budgetSourceType || '部门基线'} onChange={e=>set('budgetSourceType',e.target.value)}>{budgetSourceTypeOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label>{form.budgetSourceType === '其他' && <label><RequiredLabel>其他预算来源</RequiredLabel><select value={form.budgetSource || otherBudgetSourceOptions[0]} onChange={e=>set('budgetSource',e.target.value)}>{otherBudgetSourceOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label>}<div className={`budget-pool-hint ${budgetPoolInfo.overAmount > 0 ? 'over' : ''}`}>{budgetPoolInfo.pool ? <>扣减预算池：{budgetPoolInfo.pool.name}，剩余额度 {toNumber(budgetPoolInfo.remaining).toFixed(1)}w{budgetPoolInfo.overAmount > 0 && <small className="field-error">当前需求预算超出剩余额度 {toNumber(budgetPoolInfo.overAmount).toFixed(1)}w</small>}</> : '未匹配预算池，请在预算管理维护对应预算池'}</div></div></section>
     <section className="submit-section"><h2>分类与排期</h2><div className="submit-grid five"><label><RequiredLabel>类型</RequiredLabel><select className={form.source === '临时紧急需求' ? 'danger-field' : ''} value={form.source} onChange={e=>set('source',e.target.value)}>{demandTypeOptions.map(item => <option key={item} value={item}>{item}</option>)}</select></label><label><RequiredLabel>优先级</RequiredLabel><select value={form.priority} onChange={e=>set('priority',e.target.value)}>{priorityOptions.map(priority => <option key={priority}>{priority}</option>) }</select></label><label><RequiredLabel>需求状态</RequiredLabel><select value={form.status} onChange={e=>set('status',e.target.value)}>{demandStatusOptions.map(status => <option key={status}>{status}</option>)}</select></label><label>版本<input value={form.version} disabled={!isScheduled(form.status)} placeholder={isScheduled(form.status) ? '填写版本' : '排期后填写'} onChange={e=>set('version',e.target.value)}/></label><label><RequiredLabel>计划落地日期</RequiredLabel><input type="date" value={form.landingDate} onChange={e=>set('landingDate',e.target.value)}/></label></div></section>
-    <div className="submit-two-cols"><section className="submit-section"><h2>预算信息</h2><div className="submit-grid four"><label><RequiredLabel>预算状态</RequiredLabel><select value={form.budgetStatus} onChange={e=>set('budgetStatus',e.target.value)}>{budgetStatusOptions.map(status => <option key={status}>{status}</option>)}</select></label><label>预算金额w<input type="number" value={form.budget} disabled={!hasBudget(form)} onChange={e=>set('budget',Number(e.target.value))}/></label><label>预算接口人<input value={form.budgetContact} disabled={!hasBudget(form)} placeholder={hasBudget(form) ? '填写接口人' : '有预算后填写'} onChange={e=>set('budgetContact',e.target.value)}/></label><label>预算承诺日期<input type="date" value={form.budgetEta} disabled={!isBudgetCommitted(form.budgetStatus)} onChange={e=>set('budgetEta',e.target.value)}/></label>{form.budgetStatus === '已获取' && <label>预算获取日期（SMP系统）<input type="date" value={form.budgetAcquiredDate || ''} onChange={e=>set('budgetAcquiredDate',e.target.value)}/></label>}</div></section><section className="submit-section"><h2>工作量信息</h2><WorkloadFields value={form} set={set}/></section></div>
-    <section className="submit-section"><h2>需求说明</h2><div className="submit-grid four textareas"><label>当前业务痛点<textarea value={form.pain} onChange={e=>set('pain',e.target.value)}/></label><label>需求目标<textarea value={form.goal} onChange={e=>set('goal',e.target.value)}/></label><label>需求价值<textarea value={form.value} onChange={e=>set('value',e.target.value)}/></label><label className="wide-2">验收标准<textarea value={form.acceptanceCriteria || ''} onChange={e=>set('acceptanceCriteria',e.target.value)}/></label></div></section>
-    <div className="submit-actions"><button className="primary" onClick={submit}>提交需求</button></div>
-  </div></>;
+    <div className="submit-stacked-sections"><section className="submit-section"><h2>预算信息</h2><div className="submit-grid four"><label><RequiredLabel>预算状态</RequiredLabel><select value={form.budgetStatus} onChange={e=>set('budgetStatus',e.target.value)}>{budgetStatusOptions.map(status => <option key={status}>{status}</option>)}</select></label><label>预算金额w<input type="number" value={form.budget} disabled={!hasBudget(form)} onChange={e=>set('budget',Number(e.target.value))}/></label><label>预算接口人<input value={form.budgetContact} disabled={!hasBudget(form)} placeholder={hasBudget(form) ? '填写接口人' : '有预算后填写'} onChange={e=>set('budgetContact',e.target.value)}/></label><label>预算承诺日期<input type="date" value={form.budgetEta} disabled={!isBudgetCommitted(form.budgetStatus)} onChange={e=>set('budgetEta',e.target.value)}/></label>{form.budgetStatus === '已获取' && <label>预算获取日期（SMP系统）<input type="date" value={form.budgetAcquiredDate || ''} onChange={e=>set('budgetAcquiredDate',e.target.value)}/></label>}</div></section><section className="submit-section"><h2>工作量信息</h2><WorkloadFields value={form} set={set}/></section></div>
+    <section className="submit-section"><h2>需求说明</h2><div className="submit-grid four textareas"><label>当前业务痛点<textarea value={form.pain} onChange={e=>set('pain',e.target.value)}/></label><label>需求目标<textarea value={form.goal} onChange={e=>set('goal',e.target.value)}/></label><label>需求价值<textarea value={form.value} onChange={e=>set('value',e.target.value)}/></label><label>验收标准<textarea value={form.acceptanceCriteria || ''} onChange={e=>set('acceptanceCriteria',e.target.value)}/></label></div></section>
+    <div className="submit-actions">{embedded && <button className="secondary" onClick={onClose}>取消</button>}<button className="primary" onClick={submit}>提交需求</button></div>
+  </div>;
+  if (embedded) return <div className="modal-backdrop" onClick={onClose}><div className="modal-card demand-submit-modal" onClick={e=>e.stopPropagation()}><div className="modal-header"><h2>提交需求</h2><button className="link neutral" onClick={onClose}>关闭</button></div>{content}</div></div>;
+  return <><Header title="提交需求" desc="按结构化表单一次性登记需求核心信息。"/>{content}</>;
 }
 
 const personnelImportFields = [
@@ -1590,8 +1704,8 @@ function Personnel({personnel, setPersonnel, demands = [], budget, openDemand}) 
 function BudgetManagementPage({ demands, budget, setBudget, openDemandIds }) {
   const sourceRows = useMemo(() => buildDemandBudgetSourceRows(demands, budget), [demands, budget]);
   const poolRows = useMemo(() => buildBudgetPoolRows(demands, budget), [demands, budget]);
-  const demandPools = useMemo(() => (budget.pools || []).filter(pool => pool.type !== 'department-baseline' && !String(pool.ownerDept || pool.name || '').includes('部门基线')), [budget]);
-  const baselinePools = useMemo(() => (budget.pools || []).filter(pool => pool.type === 'department-baseline' || String(pool.ownerDept || pool.name || '').includes('部门基线')), [budget]);
+  const demandPools = useMemo(() => otherBudgetSourceOptions.map(source => (budget.pools || []).find(pool => !isDepartmentBaselinePool(pool) && [pool.name, pool.ownerDept].some(value => String(value || '').includes(source))) || { id: `pool-other-${source}`, name: `${source}预算池`, ownerDept: source, type: 'other', month: '', amount: 0, description: '其他预算来源，按需维护金额' }), [budget]);
+  const baselinePools = useMemo(() => (budget.pools || []).filter(pool => isDepartmentBaselinePool(pool)), [budget]);
   const summary = useMemo(() => buildBudgetSourceSummary(sourceRows, baselinePools), [sourceRows, baselinePools]);
   const demandPoolRows = useMemo(() => demandPools.map(pool => ({ ...pool, ...(poolRows.find(row => row.id === pool.id) || {}) })), [demandPools, poolRows]);
   const baselinePoolRows = useMemo(() => baselinePools.map(pool => ({ ...pool, ...(poolRows.find(row => row.id === pool.id) || {}) })), [baselinePools, poolRows]);
@@ -1604,7 +1718,7 @@ function BudgetManagementPage({ demands, budget, setBudget, openDemandIds }) {
   const updatePools = updater => setBudget(current => ({ ...current, pools: updater(Array.isArray(current.pools) ? current.pools : []) }));
   const updatePool = (id, key, value) => updatePools(pools => pools.map(pool => pool.id === id ? { ...pool, [key]: key === 'amount' ? Math.max(0, toNumber(value)) : value } : pool));
   const addDemandPool = () => updatePools(pools => [...pools, { id: `pool-demand-${Date.now()}`, name: '需求方预算池', ownerDept: '', type: 'demand-side', month: '', amount: 0, description: '需求方提供预算' }]);
-  const addBaselinePool = () => updatePools(pools => [...pools, { id: `pool-baseline-${Date.now()}`, name: '部门基线预算池', ownerDept: '部门基线（OBP/存量/差评等）', type: 'department-baseline', month: '', amount: 0, description: '部门基线预算' }]);
+  const addBaselinePool = () => updatePools(pools => [...pools, { id: `pool-baseline-${Date.now()}`, name: `${baselineDemandParty}预算池`, ownerDept: baselineDemandParty, type: 'department-baseline', month: '', amount: 0, description: '部门基线预算' }]);
   const deletePool = id => updatePools(pools => pools.filter(pool => pool.id !== id));
   const statusClass = status => ['已超额', '无预算池'].includes(status) ? 'risk-high' : ['接近用尽', '已用尽'].includes(status) ? 'risk-medium' : 'risk-low';
   const renderPoolRows = (rows, editableType) => rows.length ? rows.map(row => <tr key={row.id}>
@@ -1616,17 +1730,18 @@ function BudgetManagementPage({ demands, budget, setBudget, openDemandIds }) {
     <td>{row.demandCount || 0}</td>
     <td>{fmt(row.demandBudget)}w</td>
     <td>{fmt(row.executionCost)}w</td>
-    <td>{fmt((row.amount || 0) - (row.demandBudget || 0))}w</td>
+    <td className={(row.remaining ?? ((row.amount || 0) - (row.demandBudget || 0))) < 0 ? 'field-error' : ''}>{fmt(row.remaining ?? ((row.amount || 0) - (row.demandBudget || 0)))}w</td>
+    <td>{fmt(row.overAmount || 0)}w</td>
     <td><span className={`risk-badge ${statusClass(row.status || '正常')}`}>{row.status || '正常'}</span></td>
     <td><input value={row.description || ''} onChange={e=>updatePool(row.id,'description',e.target.value)}/></td>
     <td><button className="link" onClick={()=>deletePool(row.id)}>删除</button></td>
-  </tr>) : <tr><td colSpan="12">暂无{editableType}预算池。</td></tr>;
+  </tr>) : <tr><td colSpan="13">暂无{editableType}预算池。</td></tr>;
   return <div className="budget-exec-dashboard">
     <Header title="预算管理" desc="上方汇总预算来源全貌，下方分别维护需求类预算和部门基线预算，作为预算与风险分析的基础数据来源。"/>
-    <section className="budget-exec-layer"><h2>预算概览</h2><div className="kpi-grid"><Kpi label="预算池总额" value={`${fmt(totalPoolAmount)}w`}/><Kpi label="来源于需求的预算" value={`${fmt(demandPoolAmount)}w`} sub={`需求池预算申报 ${fmt(summary.demandBudget)}w`}/><Kpi label="来源于基线的预算" value={`${fmt(summary.baselineAmount)}w`}/><Kpi label="已占用预算" value={`${fmt(totalOccupied)}w`}/><Kpi label="预算剩余" value={`${fmt(totalPoolAmount - totalOccupied)}w`} tone={totalPoolAmount - totalOccupied < 0 ? 'danger' : 'ok'}/></div><div className="kpi-grid four"><Kpi label="需求预算占用" value={`${fmt(demandPoolOccupied)}w`} sub="匹配需求方预算池"/><Kpi label="基线预算占用" value={`${fmt(baselinePoolOccupied)}w`} sub="匹配部门基线预算池"/><Kpi label="无预算需求数" value={`${summary.noBudgetCount} 个`} tone={summary.noBudgetCount>0?'danger':'ok'}/><Kpi label="预算来源数" value={`${summary.sourceCount} 个`}/></div></section>
+    <section className="budget-exec-layer"><h2>预算概览</h2><div className="kpi-grid"><Kpi label="预算池总额" value={`${fmt(totalPoolAmount)}w`}/><Kpi label="来源于需求的预算" value={`${fmt(demandPoolAmount)}w`} sub={`需求池预算申报 ${fmt(summary.demandBudget)}w`}/><Kpi label="来源于基线的预算" value={`${fmt(summary.baselineAmount)}w`}/><Kpi label="已占用预算" value={`${fmt(totalOccupied)}w`}/><Kpi label="预算剩余" value={`${fmt(totalPoolAmount - totalOccupied)}w`} tone={totalPoolAmount - totalOccupied < 0 ? 'danger' : 'ok'}/></div><div className="kpi-grid four"><Kpi label="需求预算占用" value={`${fmt(demandPoolOccupied)}w`} sub="匹配需求方预算池"/><Kpi label="基线预算占用" value={`${fmt(baselinePoolOccupied)}w`} sub="匹配部门基线预算池"/><Kpi label="无预算需求数" value={`${summary.noBudgetCount} 个`} tone={summary.noBudgetCount>0?'danger':'ok'}/><Kpi label="超额预算池" value={`${poolRows.filter(row => ['已超额', '无预算池'].includes(row.status)).length} 个`} tone={poolRows.some(row => ['已超额', '无预算池'].includes(row.status))?'danger':'ok'}/><Kpi label="预算来源数" value={`${summary.sourceCount} 个`}/></div></section>
     <section className="budget-exec-card"><h2>需求池预算来源汇总</h2><p className="muted">来自需求池“需求方/预算金额/预算状态”的申报视角，用于说明需求侧预算来源构成。</p><MiniTable rows={sourceRows.map(r => ({ ...r, demandCountLink: <button className="risk-id-link" onClick={()=>openDemandIds?.(r.demandIds, `预算来源「${r.source}」关联需求`)}>{r.demandCount}</button>, budgetAmountText: `${fmt(r.budgetAmount)}w`, executionCostText: `${fmt(r.executionCost)}w / ${fmt(r.executionDays)}人天`, acquiredText: `${fmt(r.acquired)}w`, committedText: `${fmt(r.committed)}w`, overdueText: `${fmt(r.overdue)}w` }))} cols={[["source","预算来源/需求方"],["demandCountLink","需求数"],["budgetAmountText","需求申报预算"],["executionCostText","执行成本估算"],["acquiredText","已获取"],["committedText","已承诺未获取"],["overdueText","获取超期"],["noBudgetCount","无预算需求数"],["matchedPoolsText","匹配预算池"]]}/></section>
-    <section className="budget-exec-card"><div className="toolbar"><h2>需求类预算池</h2><div className="actions"><button onClick={addDemandPool}>新增需求类预算</button></div></div><p className="muted">需求方提供的预算池，通常按制造、审计、供应、财经等需求方维护。需求会按需求方自动匹配并扣减。</p><div className="mini-table"><table><thead><tr>{['预算池名称','所属需求方','类型','月份/年度','预算金额w','匹配需求数','需求预算占用w','执行成本占用w','剩余w','状态','说明','操作'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{renderPoolRows(demandPoolRows, '需求类')}</tbody></table></div></section>
-    <section className="budget-exec-card"><div className="toolbar"><h2>基线类预算池</h2><div className="actions"><button onClick={addBaselinePool}>新增基线类预算</button></div></div><p className="muted">部门基线预算包括 OBP、存量运营、差评、零星等基线来源。管理员维护后会实时影响风险判断。</p><div className="mini-table"><table><thead><tr>{['预算池名称','所属部门','类型','月份/年度','预算金额w','匹配需求数','需求预算占用w','执行成本占用w','剩余w','状态','说明','操作'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{renderPoolRows(baselinePoolRows, '基线类')}</tbody></table></div></section>
+    <section className="budget-exec-card"><div className="toolbar"><h2>需求类预算池</h2><div className="actions"><button onClick={addDemandPool}>新增需求类预算</button></div></div><p className="muted">需求方提供的预算池，通常按制造、审计、供应、财经等需求方维护。需求会按需求方自动匹配并扣减。</p><div className="mini-table"><table><thead><tr>{['预算池名称','所属需求方','类型','月份/年度','预算金额w','匹配需求数','需求预算占用w','执行成本占用w','剩余w','超额w','状态','说明','操作'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{renderPoolRows(demandPoolRows, '需求类')}</tbody></table></div></section>
+    <section className="budget-exec-card"><div className="toolbar"><h2>基线类预算池</h2><div className="actions"><button onClick={addBaselinePool}>新增基线类预算</button></div></div><p className="muted">部门基线预算包括 OBP、存量运营、差评、零星等基线来源。管理员维护后会实时影响风险判断。</p><div className="mini-table"><table><thead><tr>{['预算池名称','所属部门','类型','月份/年度','预算金额w','匹配需求数','需求预算占用w','执行成本占用w','剩余w','超额w','状态','说明','操作'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{renderPoolRows(baselinePoolRows, '基线类')}</tbody></table></div></section>
   </div>;
 }
 
@@ -1725,8 +1840,8 @@ function BudgetRiskAnalysisPage({ demands, budget, setBudget, openDemand, openDe
       <section className="budget-exec-card"><div className="toolbar"><h2>预算池维护与占用结果</h2><div className="actions"><button onClick={addPool}>新增预算池</button></div></div>{poolError && <p className="field-error">{poolError}</p>}<div className="mini-table"><table><thead><tr>{['预算池名称','所属需求方/部门','类型','月份/年度','预算金额w','需求数','需求预算占用w','执行成本占用w','剩余w','使用率','状态','说明','操作'].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{(budget.pools || []).map(pool => { const row = poolRows.find(item => item.id === pool.id) || {}; return <tr key={pool.id}><td><input value={pool.name} onChange={e=>updatePool(pool.id,'name',e.target.value)}/></td><td><input value={pool.ownerDept} onChange={e=>updatePool(pool.id,'ownerDept',e.target.value)}/></td><td><select value={pool.type} onChange={e=>updatePool(pool.id,'type',e.target.value)}>{budgetPoolTypes.map(([value,label]) => <option key={value} value={value}>{label}</option>)}</select></td><td><input type="month" value={pool.month || ''} onChange={e=>updatePool(pool.id,'month',e.target.value)}/></td><td><input type="number" min="0" value={pool.amount} onChange={e=>updatePool(pool.id,'amount',e.target.value)}/></td><td>{row.demandCount || 0}</td><td>{fmt(row.demandBudget)}w</td><td>{fmt(row.executionCost)}w</td><td>{fmt(row.remaining)}w</td><td>{Number.isFinite(row.usageRate) ? `${(row.usageRate * 100).toFixed(1)}%` : '无预算'}</td><td>{statusBadge(row.status || '正常')}</td><td><input value={pool.description || ''} onChange={e=>updatePool(pool.id,'description',e.target.value)}/></td><td><button className="link" onClick={()=>deletePool(pool.id)}>删除</button></td></tr>; })}{poolRows.filter(row => row.id === '__unmatched__').map(row => <tr key={row.id}><td>{row.name}</td><td>{row.ownerDept}</td><td>{row.typeLabel}</td><td>{row.month}</td><td>{fmt(row.amount)}w</td><td>{row.demandCount}</td><td>{fmt(row.demandBudget)}w</td><td>{fmt(row.executionCost)}w</td><td>{fmt(row.remaining)}w</td><td>无预算</td><td>{statusBadge(row.status)}</td><td>{row.description}</td><td>-</td></tr>)}</tbody></table></div></section>
     </>}
     {activeTab === 'monthly' && <><div className="toolbar"><div className="actions"><span className="month-filter-label">占用月份：</span><label className="month-filter-control"><span>开始月份</span><MonthSelect value={monthStart} onChange={setMonthStart} options={monthOptions}/></label><label className="month-filter-control"><span>结束月份</span><MonthSelect value={monthEnd} onChange={setMonthEnd} options={monthOptions}/></label></div></div><section className="budget-exec-card"><h2>月度预算占用趋势</h2><ReactECharts className="budget-exec-chart" option={buildMonthlyBudgetOccupationOption(monthlyRows)} notMerge lazyUpdate/></section><section className="budget-exec-card"><h2>月度预算占用汇总</h2><MiniTable rows={monthlyRows.map(r => ({ ...r, poolAmountText: `${fmt(r.poolAmount)}w`, demandBudgetText: `${fmt(r.demandBudget)}w`, executionCostText: `${fmt(r.executionCost)}w`, cumulativeDemandBudgetText: `${fmt(r.cumulativeDemandBudget)}w`, cumulativeExecutionCostText: `${fmt(r.cumulativeExecutionCost)}w`, remainingText: `${fmt(r.remaining)}w`, overAmountText: `${fmt(r.overAmount)}w`, statusBadge: statusBadge(r.status) }))} cols={[["month","月份"],["poolAmountText","当月预算池额度"],["demandBudgetText","当月需求预算占用"],["executionCostText","当月执行成本占用"],["cumulativeDemandBudgetText","累计需求预算占用"],["cumulativeExecutionCostText","累计执行成本占用"],["remainingText","剩余额度"],["overAmountText","超额金额"],["demandCount","涉及需求数"],["statusBadge","结论"]]}/></section></>}
-    {activeTab === 'details' && <section className="budget-exec-card"><h2>需求占用明细</h2><MiniTable rows={demandRows.map(r => ({ ...r, demandLink: <button className="risk-id-link" onClick={()=>openDemand(r.id)}>{r.demandId}</button>, budgetAmountText: `${fmt(r.budgetAmount)}w`, executionCostText: `${fmt(r.executionCost)}w`, poolStatusBadge: statusBadge(r.poolStatus), budgetInsufficientText: r.budgetInsufficient ? '是' : '否' }))} cols={[["demandLink","需求ID"],["title","名称"],["source","类型"],["investment","需求方"],["budgetPoolName","匹配预算池"],["budgetAmountText","预算金额"],["executionCostText","执行成本"],["budgetStatusLabel","预算状态"],["occupationMonth","占用月份"],["demandBA","需求BA"],["demandPM","需求PM"],["status","需求状态"],["poolStatusBadge","预算池状态"],["budgetInsufficientText","是否超额"]]}/></section>}
-    {activeTab === 'risk' && <><div className="toolbar"><div className="actions"><span className="muted">预算池和需求池变化会实时重算风险。</span></div><div className="actions"><button onClick={()=>downloadBudgetRiskCsv(riskDetailRows)}>导出</button></div></div>{filteredRiskIds && <div className="notice">{filteredRiskLabel}：当前展示 {riskDetailRows.length} 条风险需求 <button className="link neutral" onClick={()=>{ setFilteredRiskIds(null); setFilteredRiskLabel(''); setRiskLevelFilter('nonLow'); }}>清除筛选</button></div>}<section className="risk-layer"><h2>整体风险</h2><div className="kpi-grid four"><Kpi label="高风险需求" value={`${riskSummary.highRiskCount} 个`} tone={riskSummary.highRiskCount>0?'danger':'ok'}/><Kpi label="中风险需求" value={`${riskSummary.mediumRiskCount} 个`} tone={riskSummary.mediumRiskCount>0?'danger':'ok'}/><Kpi label="风险人天" value={`${riskSummary.gapDays} 人天`} tone={riskSummary.gapDays>0?'danger':'ok'}/><Kpi label="预算金额缺口" value={`${riskSummary.amountGap.toFixed(1)}w`} tone={riskSummary.amountGap>0?'danger':'ok'}/></div><div className="risk-chart-grid"><section className="risk-chart-card"><h2>风险等级分布</h2><ReactECharts className="risk-chart" option={buildRiskLevelOption(riskRows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>风险规则分类分布</h2><ReactECharts className="risk-chart" option={buildRiskCategoryOption(riskRows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>预算状态分布</h2><ReactECharts className="risk-chart" option={buildBudgetDonutOption(riskRows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>各状态人力投入与预算覆盖</h2><ReactECharts className="risk-chart" option={buildStatusBudgetOption(riskRows)} notMerge lazyUpdate/></section></div></section><section className="risk-table-card"><div className="toolbar"><h2>预算风险明细表</h2><div className="risk-filter-tags"><button className={riskLevelFilter==='nonLow'?'active':''} onClick={()=>setRiskLevelFilter('nonLow')}>中高风险</button><button className={riskLevelFilter==='high'?'active':''} onClick={()=>setRiskLevelFilter('high')}>高风险</button><button className={riskLevelFilter==='medium'?'active':''} onClick={()=>setRiskLevelFilter('medium')}>中风险</button><button className={riskLevelFilter==='low'?'active':''} onClick={()=>setRiskLevelFilter('low')}>低风险</button><button className={riskLevelFilter==='全部'?'active':''} onClick={()=>setRiskLevelFilter('全部')}>全部等级</button>{['全部', ...new Set(riskRules.map(rule => rule.category))].map(category => <button key={category} className={riskCategoryFilter===category?'active':''} onClick={()=>setRiskCategoryFilter(category)}>{category}</button>)}</div></div><div className="mini-table risk-detail-table"><table><thead><tr><th>需求ID</th><th>名称</th><th>状态</th><th>计划落地</th><th>人力</th><th>预算池</th><th>预算池剩余</th><th>风险等级</th><th>命中规则</th><th>建议操作</th></tr></thead><tbody>{riskDetailRows.map(row => <tr key={row.id} className={`risk-row-${row.riskLevel}`}><td><button className="risk-id-link" onClick={()=>openDemand(row.id)}>{row.demandNo || row.rr || row.id}</button></td><td>{row.title}</td><td>{row.status}</td><td>{row.landingDate || '未排期'}</td><td>{row.days}</td><td>{row.budgetPoolName}</td><td>{fmt(row.poolRemaining)}w</td><td><span className={`risk-badge risk-${row.riskLevel}`}>{row.riskText}</span></td><td className="risk-reason-cell">{row.triggeredRules.map(rule => rule.name).join('；')}</td><td className="risk-reason-cell">{row.action}</td></tr>)}</tbody></table></div></section><RiskRulesPage rows={riskRows} openDemandIds={openDemandIds}/></>}
+    {activeTab === 'details' && <section className="budget-exec-card"><h2>需求占用明细</h2><MiniTable rows={demandRows.map(r => ({ ...r, demandLink: <button className="risk-id-link" onClick={()=>openDemand(r.id)}>{r.demandId}</button>, budgetSourceText: r.budgetSourceType === '其他' ? `其他-${r.budgetSource || '-'}` : r.budgetSourceType, budgetAmountText: `${fmt(r.budgetAmount)}w`, executionCostText: `${fmt(r.executionCost)}w`, poolRemainingText: `${fmt(r.poolRemaining)}w`, poolStatusBadge: statusBadge(r.poolStatus), budgetInsufficientText: r.budgetInsufficient ? '是' : '否' }))} cols={[["demandLink","需求ID"],["title","名称"],["source","类型"],["investment","需求方"],["budgetSourceText","预算来源"],["budgetPoolName","匹配预算池"],["budgetAmountText","预算金额"],["executionCostText","执行成本"],["poolRemainingText","预算池剩余"],["budgetStatusLabel","预算状态"],["occupationMonth","占用月份"],["demandBA","需求BA"],["demandPM","需求PM"],["status","需求状态"],["poolStatusBadge","预算池状态"],["budgetInsufficientText","是否超额"]]}/></section>}
+    {activeTab === 'risk' && <><div className="toolbar"><div className="actions"><span className="muted">预算池和需求池变化会实时重算风险。</span></div><div className="actions"><button onClick={()=>downloadBudgetRiskCsv(riskDetailRows)}>导出</button></div></div>{filteredRiskIds && <div className="notice">{filteredRiskLabel}：当前展示 {riskDetailRows.length} 条风险需求 <button className="link neutral" onClick={()=>{ setFilteredRiskIds(null); setFilteredRiskLabel(''); setRiskLevelFilter('nonLow'); }}>清除筛选</button></div>}<section className="risk-layer"><h2>整体风险</h2><div className="kpi-grid four"><Kpi label="高风险需求" value={`${riskSummary.highRiskCount} 个`} tone={riskSummary.highRiskCount>0?'danger':'ok'}/><Kpi label="中风险需求" value={`${riskSummary.mediumRiskCount} 个`} tone={riskSummary.mediumRiskCount>0?'danger':'ok'}/><Kpi label="风险人天" value={`${riskSummary.gapDays} 人天`} tone={riskSummary.gapDays>0?'danger':'ok'}/><Kpi label="预算金额缺口" value={`${riskSummary.amountGap.toFixed(1)}w`} tone={riskSummary.amountGap>0?'danger':'ok'}/></div><div className="risk-chart-grid"><section className="risk-chart-card"><h2>风险等级分布</h2><ReactECharts className="risk-chart" option={buildRiskLevelOption(riskRows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>风险规则分类分布</h2><ReactECharts className="risk-chart" option={buildRiskCategoryOption(riskRows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>预算状态分布</h2><ReactECharts className="risk-chart" option={buildBudgetDonutOption(riskRows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>各状态人力投入与预算覆盖</h2><ReactECharts className="risk-chart" option={buildStatusBudgetOption(riskRows)} notMerge lazyUpdate/></section></div></section><section className="risk-table-card"><div className="toolbar"><h2>预算风险明细表</h2><div className="risk-filter-tags"><button className={riskLevelFilter==='nonLow'?'active':''} onClick={()=>setRiskLevelFilter('nonLow')}>中高风险</button><button className={riskLevelFilter==='high'?'active':''} onClick={()=>setRiskLevelFilter('high')}>高风险</button><button className={riskLevelFilter==='medium'?'active':''} onClick={()=>setRiskLevelFilter('medium')}>中风险</button><button className={riskLevelFilter==='low'?'active':''} onClick={()=>setRiskLevelFilter('low')}>低风险</button><button className={riskLevelFilter==='全部'?'active':''} onClick={()=>setRiskLevelFilter('全部')}>全部等级</button>{['全部', ...new Set(riskRules.map(rule => rule.category))].map(category => <button key={category} className={riskCategoryFilter===category?'active':''} onClick={()=>setRiskCategoryFilter(category)}>{category}</button>)}</div></div><div className="mini-table risk-detail-table"><table><thead><tr><th>需求ID</th><th>名称</th><th>状态</th><th>计划落地</th><th>人力</th><th>预算来源</th><th>需求预算</th><th>预算池</th><th>预算池剩余</th><th>预算池状态</th><th>超额金额</th><th>风险等级</th><th>命中规则</th><th>建议操作</th></tr></thead><tbody>{riskDetailRows.map(row => <tr key={row.id} className={`risk-row-${row.riskLevel}`}><td><button className="risk-id-link" onClick={()=>openDemand(row.id)}>{row.demandNo || row.rr || row.id}</button></td><td>{row.title}</td><td>{row.status}</td><td>{row.landingDate || '未排期'}</td><td>{row.days}</td><td>{row.budgetSourceType === '其他' ? `其他-${row.budgetSource || '-'}` : row.budgetSourceType}</td><td>{fmt(row.budget)}w</td><td>{row.budgetPoolName}</td><td className={row.poolRemaining < 0 ? 'field-error' : ''}>{fmt(row.poolRemaining)}w</td><td>{statusBadge(row.poolStatus)}</td><td className={row.poolOverAmount > 0 ? 'field-error' : ''}>{fmt(row.poolOverAmount)}w</td><td><span className={`risk-badge risk-${row.riskLevel}`}>{row.riskText}</span></td><td className="risk-reason-cell">{row.triggeredRules.map(rule => rule.name).join('；')}</td><td className="risk-reason-cell">{row.action}</td></tr>)}</tbody></table></div></section><RiskRulesPage rows={riskRows} openDemandIds={openDemandIds}/></>}
     {activeTab === 'execution' && <><div className="toolbar"><div className="actions"><input type="month" value={monthKey} onChange={e=>setMonthKey(e.target.value)}/></div><div className="actions"><button onClick={()=>downloadBudgetExecutionCsv(executorRows, sourceRows, executionDemandRows)}>导出</button></div></div><div className="kpi-grid"><Kpi label="当月执行人天" value={`${fmt(executionSummary.monthlyExecutionDays)} 人天`}/><Kpi label="超饱和需求PM数" value={`${executionSummary.overloadedExecutors} 人`} tone={executionSummary.overloadedExecutors>0?'danger':'ok'}/><Kpi label="预算池总额" value={`${fmt(executionSummary.budgetAmount)}w`}/><Kpi label="执行/占用预算" value={`${fmt(executionSummary.occupiedCost)}w`}/><Kpi label="超执行预算池数" value={`${executionSummary.overBudgetSources} 个`} tone={executionSummary.overBudgetSources>0?'danger':'ok'}/></div><section className="budget-exec-layer"><h2>当月PM饱和与预算支撑</h2><section className="budget-exec-card"><h2>当月需求PM饱和度</h2>{executorRows.length ? <ReactECharts className="budget-exec-chart" option={buildExecutorSaturationOption(executorRows, budget)} notMerge lazyUpdate/> : <p className="empty">当前月份暂无已排期需求</p>}</section><section className="budget-exec-card"><h2>需求PM明细</h2><MiniTable rows={executorRows.map(r => ({ ...r, executionDays: fmt(r.executionDays), saturationText: `${(r.saturation*100).toFixed(1)}%`, estimatedCost: `${fmt(r.estimatedCost)}w`, supportRateText: `${(r.supportRate*100).toFixed(1)}%`, conclusionBadge: statusBadge(r.conclusion) }))} cols={[["demandPM","需求PM"],["demandCount","当月需求数"],["executionDays","执行人天"],["saturationText","饱和度"],["estimatedCost","估算成本"],["supportRateText","预算支撑率"],["conclusionBadge","结论"]]}/></section></section><section className="budget-exec-layer"><h2>预算池/需求方执行占用</h2><div className="budget-exec-chart-grid"><section className="budget-exec-card"><h2>预算池执行占用</h2><ReactECharts className="budget-exec-chart" option={buildBudgetSourceExecutionOption(sourceRows)} notMerge lazyUpdate/></section><section className="budget-exec-card"><h2>预算执行率排行</h2><ReactECharts className="budget-exec-chart" option={buildBudgetExecutionRateOption(sourceRows)} notMerge lazyUpdate/></section></div><section className="budget-exec-card"><h2>预算池/需求方明细</h2><MiniTable rows={sourceRows.map(r => ({ ...r, demandCountLink: <button className="risk-id-link" onClick={()=>openDemandIds?.(r.demandIds || [], `预算池「${r.source}」关联需求`)}>{r.demandCount}</button>, budgetAmount: `${fmt(r.budgetAmount)}w`, totalExecutionCost: `${fmt(r.totalExecutionCost)}w`, remaining: `${fmt(r.remaining)}w`, executionRateText: Number.isFinite(r.executionRate) ? `${(r.executionRate*100).toFixed(1)}%` : '无预算', statusBadge: statusBadge(r.status) }))} cols={[["source","预算池/需求方"],["demandCountLink","需求数"],["budgetAmount","预算额度"],["totalExecutionCost","执行占用合计"],["remaining","剩余额度"],["executionRateText","执行率"],["noBudgetCount","无预算需求数"],["overBudgetDemandCount","单需求超预算数"],["statusBadge","状态"]]}/></section></section><section className="budget-exec-card"><h2>需求与预算池映射明细</h2><MiniTable rows={executionDemandRows.map(r => ({ ...r, demandLink: <button className="risk-id-link" onClick={()=>openDemand(r.id)}>{r.demandId}</button>, budgetAmount: `${fmt(r.budgetAmount)}w`, executionCost: `${fmt(r.executionCost)}w`, budgetInsufficientText: r.budgetInsufficient ? '是' : '否' }))} cols={[["demandLink","需求ID"],["title","名称"],["demandBA","需求BA"],["demandPM","需求PM"],["budgetSource","预算池/需求方"],["status","状态"],["executionStage","执行阶段"],["month","计划落地月份"],["executionDays","预算执行人天"],["budgetAmount","预算金额"],["executionCost","执行成本"],["budgetStatusLabel","预算状态"],["budgetInsufficientText","是否预算不足"]]}/></section></>}
   </div>;
 }
@@ -1787,7 +1902,7 @@ function BudgetRiskDashboard({demands, budget, openDemand, openDemandIds}) {
     {riskTab === 'rules' ? <RiskRulesPage rows={rows} openDemandIds={openDemandIds}/> : <>
       <section className="risk-layer"><h2>整体风险</h2><div className="kpi-grid four"><Kpi label="高风险需求" value={`${summary.highRiskCount} 个`} tone={summary.highRiskCount>0?'danger':'ok'}/><Kpi label="中风险需求" value={`${summary.mediumRiskCount} 个`} tone={summary.mediumRiskCount>0?'danger':'ok'}/><Kpi label="风险人天" value={`${summary.gapDays} 人天`} tone={summary.gapDays>0?'danger':'ok'}/><Kpi label="预算金额缺口" value={`${summary.amountGap.toFixed(1)}w`} tone={summary.amountGap>0?'danger':'ok'} sub="已消耗 + 需求成本估算 - 全年预算"/></div><div className="kpi-grid four"><Kpi label="需求成本估算" value={`${summary.estimatedCost.toFixed(1)}w`} sub={`${getBudgetDayCost(budget)}w/人天`}/><Kpi label="需求预算金额" value={`${summary.demandBudget.toFixed(1)}w`}/><Kpi label="需求预算缺口" value={`${summary.budgetGap.toFixed(1)}w`} tone={summary.budgetGap>0?'danger':'ok'}/><Kpi label="需求总数" value={`${summary.totalCount} 个`}/></div><section className="risk-chart-card"><h2>整体预算缺口分析</h2><ReactECharts className="risk-chart" option={buildBudgetGapOption(rows, budget)} notMerge lazyUpdate/></section></section>
       <section className="risk-layer"><h2>风险分布</h2><div className="risk-chart-grid"><section className="risk-chart-card"><h2>风险等级分布</h2><ReactECharts className="risk-chart" option={buildRiskLevelOption(rows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>风险规则分类分布</h2><ReactECharts className="risk-chart" option={buildRiskCategoryOption(rows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>预算状态分布（需求数 vs 人力）</h2><ReactECharts className="risk-chart" option={buildBudgetDonutOption(rows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>月度风险趋势 / 按计划落地月份分布</h2><p className="muted">当前无历史快照，趋势按计划落地月份分布。</p><ReactECharts className="risk-chart" option={buildBudgetTrendOption(rows)} notMerge lazyUpdate/></section><section className="risk-chart-card"><h2>各状态人力投入与预算覆盖</h2><ReactECharts className="risk-chart" option={buildStatusBudgetOption(rows)} notMerge lazyUpdate/></section></div></section>
-      <section className="risk-layer"><h2>风险明细</h2><section className="risk-table-card"><div className="toolbar"><h2>预算风险明细表</h2><div className="risk-filter-tags"><button className={riskLevelFilter==='nonLow'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('nonLow'))}>中高风险</button><button className={riskLevelFilter==='high'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('high'))}>高风险</button><button className={riskLevelFilter==='medium'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('medium'))}>中风险</button><button className={riskLevelFilter==='low'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('low'))}>低风险</button><button className={riskLevelFilter==='全部'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('全部'))}>全部等级</button>{['全部', ...new Set(riskRules.map(rule => rule.category))].map(category => <button key={category} className={riskCategoryFilter===category?'active':''} onClick={()=>keepScroll(()=>setRiskCategoryFilter(category))}>{category}</button>)}</div></div><div className="mini-table risk-detail-table"><table><thead><tr><th>需求ID</th><th>名称</th><th>状态</th><th>计划落地</th><th>距落地天数</th><th>人力</th><th>预算状态</th><th>风险等级</th><th>命中规则</th><th>建议操作</th></tr></thead><tbody>{riskDetailRows.map(row => <tr key={row.id} className={`risk-row-${row.riskLevel}`}><td><button className="risk-id-link" onClick={()=>openDemand(row.id)}>{row.demandNo || row.rr || row.id}</button></td><td>{row.title}</td><td>{row.status}</td><td>{row.landingDate || '未排期'}</td><td>{Number.isFinite(row.daysToLanding) ? row.daysToLanding : '未排期'}</td><td>{row.days}</td><td>{row.budgetStatusLabel}</td><td><span className={`risk-badge risk-${row.riskLevel}`}>{row.riskText}</span></td><td className="risk-reason-cell">{row.triggeredRules.map(rule => rule.name).join('；')}</td><td className="risk-reason-cell">{row.action}</td></tr>)}</tbody></table></div></section></section>
+      <section className="risk-layer"><h2>风险明细</h2><section className="risk-table-card"><div className="toolbar"><h2>预算风险明细表</h2><div className="risk-filter-tags"><button className={riskLevelFilter==='nonLow'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('nonLow'))}>中高风险</button><button className={riskLevelFilter==='high'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('high'))}>高风险</button><button className={riskLevelFilter==='medium'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('medium'))}>中风险</button><button className={riskLevelFilter==='low'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('low'))}>低风险</button><button className={riskLevelFilter==='全部'?'active':''} onClick={()=>keepScroll(()=>setRiskLevelFilter('全部'))}>全部等级</button>{['全部', ...new Set(riskRules.map(rule => rule.category))].map(category => <button key={category} className={riskCategoryFilter===category?'active':''} onClick={()=>keepScroll(()=>setRiskCategoryFilter(category))}>{category}</button>)}</div></div><div className="mini-table risk-detail-table"><table><thead><tr><th>需求ID</th><th>名称</th><th>状态</th><th>计划落地</th><th>距落地天数</th><th>人力</th><th>预算来源</th><th>需求预算</th><th>预算状态</th><th>预算池</th><th>预算池状态</th><th>超额金额</th><th>风险等级</th><th>命中规则</th><th>建议操作</th></tr></thead><tbody>{riskDetailRows.map(row => <tr key={row.id} className={`risk-row-${row.riskLevel}`}><td><button className="risk-id-link" onClick={()=>openDemand(row.id)}>{row.demandNo || row.rr || row.id}</button></td><td>{row.title}</td><td>{row.status}</td><td>{row.landingDate || '未排期'}</td><td>{Number.isFinite(row.daysToLanding) ? row.daysToLanding : '未排期'}</td><td>{row.days}</td><td>{row.budgetSourceType === '其他' ? `其他-${row.budgetSource || '-'}` : row.budgetSourceType}</td><td>{fmt(row.budget)}w</td><td>{row.budgetStatusLabel}</td><td>{row.budgetPoolName}</td><td>{statusBadge(row.poolStatus)}</td><td className={row.poolOverAmount > 0 ? 'field-error' : ''}>{fmt(row.poolOverAmount)}w</td><td><span className={`risk-badge risk-${row.riskLevel}`}>{row.riskText}</span></td><td className="risk-reason-cell">{row.triggeredRules.map(rule => rule.name).join('；')}</td><td className="risk-reason-cell">{row.action}</td></tr>)}</tbody></table></div></section></section>
     </>}
   </div>;
 }
@@ -1855,7 +1970,7 @@ function MiniTable({rows, cols}) {
   return <div className="mini-table"><table><thead><tr>{cols.map(c=><th key={c[0]}><button className="table-sort-trigger" onClick={()=>setSort(current=>toggleSort(current, c[0]))}>{c[1]}<span className="sort-indicator">{sort.key === c[0] ? (sort.direction === 'asc' ? ' ↑' : ' ↓') : ' ↕'}</span></button></th>)}</tr></thead><tbody>{sortedRows.length ? sortedRows.map((r,i)=><tr key={i}>{cols.map(c=><td key={c[0]}>{typeof r[c[0]]==='boolean' ? (r[c[0]]?'是':'否') : r[c[0]]}</td>)}</tr>) : <tr><td colSpan={cols.length}>暂无数据</td></tr>}</tbody></table></div>;
 }
 
-function Manual() { return <><Header title="Web版操作说明手册" desc="普通用户可按本手册了解每个功能的用途和操作步骤。"/><section className="manual card"><h2>1. 需求池与数据维护</h2><p>用途：集中维护需求基础数据，支持筛选、字段编辑、导入和导出。</p><ol><li>进入系统后默认打开需求池。</li><li>查看顶部指标卡，了解需求总数、总预估人天、有预算需求数和数据缺失数量。</li><li>使用全文检索、月份范围和表头筛选定位需求；所有需求池表头都可点击排序，排序在筛选后生效。</li><li>导入时，系统会先按字段名推荐映射关系，可自行修正后再导入。</li></ol><h2>2. 需求池</h2><p>用途：集中管理所有需求提交方提供的需求清单，不在此页展示风险分析结论。</p><ol><li>点击左侧“需求池”。</li><li>使用筛选框按需求单号、提出人、需求PM、类型、需求方、状态等字段查看需求。</li><li>类型包含产品立项规划、重要用户、临时紧急需求、DFx需求、存量运营维护/差评/零星需求。</li><li>需求方包含 CBG、部门基线（OBP/存量/差评等）、GPO 等。</li><li>点击“导入”可批量导入，点击“导出”可导出当前需求数据。</li><li>如发现错误数据，可直接编辑字段或点击对应行的“删除”。</li></ol><h2>3. 提交需求</h2><p>用途：需求提交方录入新的业务需求。</p><ol><li>点击“提交需求”。</li><li>带 * 的字段为必填项，填写需求名称、需求单号、提出人、需求方、类型、优先级、状态、落地日期和工作量等核心信息。优先级含义：紧急为下个版本完成，高为2个月内完成，一般不要求时间。</li><li>工作量可选择按总量或按分项填写；按分项时系统自动汇总分析、前端、中台、后台人天。</li><li>预算状态为已获取时，可填写预算获取日期（SMP系统）。</li><li>点击“提交需求”，系统会自动进入需求池查看结果。</li></ol><h2>4. 人员管理</h2><p>用途：开发团队主管通过表格维护人员、岗位、地点和成本数据。</p><ol><li>点击“人员管理”。</li><li>点击“新增人员”录入人员姓名、工号、负责人、岗位、地点、供应商和入项时间。</li><li>默认仿真数据包含 35 个 TM 和 5 个 OD，年均成本 40w，按 270 工作日折算为约 1481.48 元/人天。</li><li>岗位可选择设计、前端、后端、数据、UX、测试、PM。</li><li>人力成本按“元/人天”填写，月度可用人天默认可按 22.5 维护。</li></ol><h2>5. 预算与风险分析</h2><p>用途：把预算分析、风险看板和预算执行分析合并在一个页面，统一维护预算池并实时计算预算扣减、月度占用、风险和执行情况。</p><ol><li>点击“预算与风险分析”。页面包含“预算池总览、月度预算占用、需求占用明细、风险分析、执行分析”五个页签。</li><li>预算池来源包括需求方提供预算、部门基线预算和其他预算；预算池可维护名称、所属需求方/部门、类型、月份、金额和说明。</li><li>需求预算优先按预算池ID匹配；没有预算池ID时，按需求方匹配预算池所属方或预算池名称。匹配失败的需求显示为“未匹配预算池”。</li><li>需求预算金额会从匹配预算池中扣减，并展示预算池剩余、使用率、接近用尽、已用尽和已超额状态。</li><li>“月度预算占用”按预算获取日期、预算承诺日期或计划落地日期归集，展示每月预算池额度、需求预算占用、执行成本占用、累计占用、剩余和超额金额。</li><li>“需求占用明细”可追溯每个需求扣减的预算池，需求ID可点击跳回需求池并展开。</li><li>“风险分析”保留原风险等级、规则分类、预算状态和风险明细能力，并新增无匹配预算池、预算池超额、近30天预算池不足等风险规则。</li><li>“执行分析”展示PM饱和度、预算池/需求方执行占用和需求映射明细；执行人天优先使用决算人力，其次使用已验收需求的结算人力，最后使用预估人天。</li><li>预算池金额、需求池预算金额、预算状态、需求方、预算日期、计划落地日期、人天成本等变化后，所有KPI、图表和表格都会动态刷新，无需手动刷新。</li></ol></section></>; }
+function Manual() { return <><Header title="Web版操作说明手册" desc="普通用户可按本手册了解每个功能的用途和操作步骤。"/><section className="manual card"><h2>1. 需求池与数据维护</h2><p>用途：集中维护需求基础数据，支持筛选、字段编辑、导入和导出。</p><ol><li>进入系统后默认打开需求池。</li><li>查看顶部指标卡，了解需求总数、总预估人天、有预算需求数和数据缺失数量。</li><li>使用全文检索、月份范围和表头筛选定位需求；所有需求池表头都可点击排序，排序在筛选后生效。</li><li>导入时，系统会先按字段名推荐映射关系，可自行修正后再导入。</li></ol><h2>2. 需求池</h2><p>用途：集中管理所有需求提交方提供的需求清单，不在此页展示风险分析结论。</p><ol><li>点击左侧“需求池”。</li><li>使用筛选框按需求单号、提出人、需求PM、类型、需求方、状态等字段查看需求。</li><li>类型包含产品立项规划、重要用户、临时紧急需求、DFx需求、存量运营维护/差评/零星需求。</li><li>需求方包含 CBG、生产办公运营中心、GPO 等；预算来源可选择部门基线或其他预算来源。</li><li>点击“导入”可批量导入，点击“导出”可导出当前需求数据。</li><li>如发现错误数据，可直接编辑字段或点击对应行的“删除”。</li></ol><h2>3. 提交需求</h2><p>用途：需求提交方录入新的业务需求。</p><ol><li>点击“提交需求”。</li><li>带 * 的字段为必填项，填写需求名称、需求单号、提出人、需求方、类型、优先级、状态、落地日期和工作量等核心信息。优先级含义：紧急为下个版本完成，高为2个月内完成，一般不要求时间。</li><li>工作量可选择按总量或按分项填写；按分项时系统自动汇总分析、前端、中台、后台人天。</li><li>预算状态为已获取时，可填写预算获取日期（SMP系统）。</li><li>点击“提交需求”，系统会自动进入需求池查看结果。</li></ol><h2>4. 人员管理</h2><p>用途：开发团队主管通过表格维护人员、岗位、地点和成本数据。</p><ol><li>点击“人员管理”。</li><li>点击“新增人员”录入人员姓名、工号、负责人、岗位、地点、供应商和入项时间。</li><li>默认仿真数据包含 35 个 TM 和 5 个 OD，年均成本 40w，按 270 工作日折算为约 1481.48 元/人天。</li><li>岗位可选择设计、前端、后端、数据、UX、测试、PM。</li><li>人力成本按“元/人天”填写，月度可用人天默认可按 22.5 维护。</li></ol><h2>5. 预算与风险分析</h2><p>用途：把预算分析、风险看板和预算执行分析合并在一个页面，统一维护预算池并实时计算预算扣减、月度占用、风险和执行情况。</p><ol><li>点击“预算与风险分析”。页面包含“预算池总览、月度预算占用、需求占用明细、风险分析、执行分析”五个页签。</li><li>预算池来源包括需求方提供预算、部门基线预算和其他预算；预算池可维护名称、所属需求方/部门、类型、月份、金额和说明。</li><li>需求预算优先按预算池ID匹配；没有预算池ID时，按需求方匹配预算池所属方或预算池名称。匹配失败的需求显示为“未匹配预算池”。</li><li>需求预算金额会从匹配预算池中扣减，并展示预算池剩余、使用率、接近用尽、已用尽和已超额状态。</li><li>“月度预算占用”按预算获取日期、预算承诺日期或计划落地日期归集，展示每月预算池额度、需求预算占用、执行成本占用、累计占用、剩余和超额金额。</li><li>“需求占用明细”可追溯每个需求扣减的预算池，需求ID可点击跳回需求池并展开。</li><li>“风险分析”保留原风险等级、规则分类、预算状态和风险明细能力，并新增无匹配预算池、预算池超额、近30天预算池不足等风险规则。</li><li>“执行分析”展示PM饱和度、预算池/需求方执行占用和需求映射明细；执行人天优先使用决算人力，其次使用已验收需求的结算人力，最后使用预估人天。</li><li>预算池金额、需求池预算金额、预算状态、需求方、预算日期、计划落地日期、人天成本等变化后，所有KPI、图表和表格都会动态刷新，无需手动刷新。</li></ol></section></>; }
 
 function parseCsv(text) {
   const rows = [];
@@ -1884,9 +1999,9 @@ function parseCsv(text) {
   return rows;
 }
 
-const requiredDemandImportFields = new Set(['title', 'demandNo', 'source', 'investment', 'requester', 'status', 'priority', 'landingDate', 'workloadMode', 'days']);
+const requiredDemandImportFields = new Set(['title', 'source', 'investment', 'requester', 'status', 'priority', 'landingDate', 'workloadMode', 'days']);
 const demandImportFields = [
-  ['title', '需求名称', ['需求名称', '需求', '标题', '需求标题']], ['demandNo', '需求单号', ['需求单号', '需求编号', 'RR单号', 'RR']], ['source', '类型', ['类型', '需求来源']], ['investment', '需求方', ['需求方', '投资来源', '预算来源']], ['demandBA', '需求BA', ['需求BA', 'BA', '业务分析师', '需求分析师']], ['demandPM', '需求PM', ['需求PM', 'PM', '项目经理', '交付PM', '需求PM', '负责人', '开发负责人', '承接人']], ['pain', '当前业务痛点', ['当前业务痛点', '业务痛点']], ['goal', '需求目标', ['需求目标']], ['value', '需求价值', ['需求价值']], ['acceptanceCriteria', '验收标准', ['验收标准', '验收条件', '验收准则', '验收口径', 'AC']], ['requester', '需求提出人', ['需求提出人', '提出人', '申请人']], ['review', '业务评审结论', ['业务评审结论', '评审结论']], ['status', '需求状态', ['需求状态', '进展状态']], ['ir', 'IR单号', ['IR单号']], ['priority', '优先级', ['优先级']], ['version', '版本', ['版本']], ['landingDate', '计划落地日期', ['计划落地日期', '计划上线日期', '计划完成日期', '落地日期']], ['workloadMode', '工作量填写方式', ['工作量填写方式', '填写方式']], ['days', '总工作量', ['总工作量', '总工作量（人天）预估', '总工作量人天', '预估人天']], ['analysis', '需求分析工作量预估', ['需求分析工作量预估', '分析']], ['frontend', '前端开发工作量预估', ['前端开发工作量预估', '前端']], ['middle', '中台开发工作量预估', ['中台开发工作量预估', '中台']], ['backend', '后台开发工作量预估', ['后台开发工作量预估', '后台']], ['finalDays', '决算人力', ['决算人力', '决算人天', '最终调整人力', '最终调整人天', '最终人力', '调整后人天']], ['settlementDays', '结算人力', ['结算人力', '结算人力资源投入', '实际结算人天']], ['funded', '是否带预算', ['是否带预算', '是否有预算']], ['budget', '预算金额w', ['预算金额w', '预算金额']], ['budgetContact', '预算接口人', ['预算接口人']], ['budgetEta', '预算承诺日期', ['预算承诺日期', '预计获取时间']], ['budgetAcquiredDate', '预算获取日期', ['预算获取日期', 'SMP预算获取日期', '预算获取日期（SMP系统）']], ['budgetStatus', '预算状态', ['预算状态']], ['committed', '是否承诺', ['是否承诺', '是否已承诺']]
+  ['title', '需求名称', ['需求名称', '需求', '标题', '需求标题']], ['demandNo', '需求单号', ['需求单号', '需求编号', 'RR单号', 'RR']], ['source', '类型', ['类型', '需求来源']], ['investment', '需求方', ['需求方', '投资来源']], ['budgetSourceType', '预算来源', ['预算来源', '预算来源类型']], ['budgetSource', '其他预算来源', ['其他预算来源', '预算来源明细']], ['budgetPoolId', '预算池ID', ['预算池ID']], ['demandBA', '需求BA', ['需求BA', 'BA', '业务分析师', '需求分析师']], ['demandPM', '需求PM', ['需求PM', 'PM', '项目经理', '交付PM', '需求PM', '负责人', '开发负责人', '承接人']], ['pain', '当前业务痛点', ['当前业务痛点', '业务痛点']], ['goal', '需求目标', ['需求目标']], ['value', '需求价值', ['需求价值']], ['acceptanceCriteria', '验收标准', ['验收标准', '验收条件', '验收准则', '验收口径', 'AC']], ['requester', '需求提出人', ['需求提出人', '提出人', '申请人']], ['review', '业务评审结论', ['业务评审结论', '评审结论']], ['status', '需求状态', ['需求状态', '进展状态']], ['ir', 'IR单号', ['IR单号']], ['priority', '优先级', ['优先级']], ['version', '版本', ['版本']], ['landingDate', '计划落地日期', ['计划落地日期', '计划上线日期', '计划完成日期', '落地日期']], ['workloadMode', '工作量填写方式', ['工作量填写方式', '填写方式']], ['days', '总工作量', ['总工作量', '总工作量（人天）预估', '总工作量人天', '预估人天']], ['analysis', '需求分析工作量预估', ['需求分析工作量预估', '分析']], ['frontend', '前端开发工作量预估', ['前端开发工作量预估', '前端']], ['middle', '中台开发工作量预估', ['中台开发工作量预估', '中台']], ['backend', '后台开发工作量预估', ['后台开发工作量预估', '后台']], ['finalDays', '决算人力', ['决算人力', '决算人天', '最终调整人力', '最终调整人天', '最终人力', '调整后人天']], ['settlementDays', '结算人力', ['结算人力', '结算人力资源投入', '实际结算人天']], ['funded', '是否带预算', ['是否带预算', '是否有预算']], ['budget', '预算金额w', ['预算金额w', '预算金额']], ['budgetContact', '预算接口人', ['预算接口人']], ['budgetEta', '预算承诺日期', ['预算承诺日期', '预计获取时间']], ['budgetAcquiredDate', '预算获取日期', ['预算获取日期', 'SMP预算获取日期', '预算获取日期（SMP系统）']], ['budgetStatus', '预算状态', ['预算状态']], ['committed', '是否承诺', ['是否承诺', '是否已承诺']]
 ];
 const demandImportFieldMap = Object.fromEntries(demandImportFields.map(([key, label, aliases]) => [key, { label, aliases }]));
 
@@ -1918,12 +2033,15 @@ function parseDemandCsv(text, fieldMapping = null) {
   const getField = (record, key, fallback = '') => fieldMapping ? get(record, key, fallback) : get(record, demandImportFieldMap[key].aliases, fallback);
   return rows.slice(1).map((record, idx) => {
     const demandNo = formatRr(getField(record, 'demandNo', ''));
-    if (!isValidRr(demandNo)) throw new Error(`第${idx + 2}行需求单号无效：${demandNo || '未填写'}。${rrFormatText}`);
+    if (demandNo && !isValidRr(demandNo)) throw new Error(`第${idx + 2}行需求单号无效：${demandNo}。${rrFormatText}`);
     return {
     title: getField(record, 'title', `导入需求${idx + 1}`),
     demandNo,
     source: getField(record, 'source', '产品立项规划'),
-    investment: getField(record, 'investment', '部门基线（OBP/存量/差评等）'),
+    investment: getField(record, 'investment', baselineDemandParty),
+    budgetSourceType: getField(record, 'budgetSourceType', '部门基线'),
+    budgetSource: getField(record, 'budgetSource', ''),
+    budgetPoolId: getField(record, 'budgetPoolId', ''),
     demandBA: getField(record, 'demandBA', ''),
     demandPM: getField(record, 'demandPM', ''),
     pain: getField(record, 'pain', ''),
@@ -1958,8 +2076,8 @@ function parseDemandCsv(text, fieldMapping = null) {
 }
 
 function downloadTemplate() {
-  const headers = ['需求名称','需求单号','类型','需求方','需求BA','需求PM','当前业务痛点','需求目标','需求价值','验收标准','需求提出人','业务评审结论','需求状态','验收标准','IR单号','优先级','版本','计划落地日期','工作量填写方式','总工作量（人天）预估','需求分析工作量预估','前端开发工作量预估','中台开发工作量预估','后台开发工作量预估','决算人力','结算人力','是否带预算','预算金额w','预算接口人','预算承诺日期','预算获取日期','预算状态'];
-  const sample = ['示例需求','RR2026053012345','产品立项规划','示例需求方','李BA','王PM','当前流程效率低','优化处理流程','提升效率','上线后核心流程可验证且异常可回滚','张三','待评审','待评估','IR-001','高','','2026-08-31','total','30','5','10','8','7','0','0','否','0','','','','已承诺未获取'];
+  const headers = ['需求名称','需求单号','类型','需求方','预算来源','其他预算来源','预算池ID','需求BA','需求PM','当前业务痛点','需求目标','需求价值','验收标准','需求提出人','业务评审结论','需求状态','IR单号','优先级','版本','计划落地日期','工作量填写方式','总工作量（人天）预估','需求分析工作量预估','前端开发工作量预估','中台开发工作量预估','后台开发工作量预估','决算人力','结算人力','是否带预算','预算金额w','预算接口人','预算承诺日期','预算获取日期','预算状态'];
+  const sample = ['示例需求','RR2026053012345','产品立项规划',baselineDemandParty,'部门基线','','','李BA','王PM','当前流程效率低','优化处理流程','提升效率','上线后核心流程可验证且异常可回滚','张三','待评审','待评估','IR-001','高','','2026-08-31','total','30','5','10','8','7','0','0','否','0','','','','已承诺未获取'];
   const csv = [headers.join(','), sample.map(v => `"${v}"`).join(',')].join('\n');
   const blob = new Blob([csv], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = '需求导入模板.csv'; a.click();
@@ -1980,8 +2098,8 @@ function downloadImportTestCsv() {
 }
 
 function downloadCsv(demands) {
-  const headers = ['需求名称','需求单号','类型','需求方','需求BA','需求PM','验收标准','IR单号','优先级','版本','计划落地日期','工作量填写方式','总工作量','决算人力','结算人力','预算金额w','预算接口人','预算承诺日期','预算获取日期','预算状态','评审结论','需求状态'];
-  const lines = [headers.join(',')].concat(demands.map(d => [d.title,d.demandNo,d.source,d.investment,d.demandBA || '',d.demandPM || '',d.acceptanceCriteria || '',d.ir,d.priority,d.version,d.landingDate || '',d.workloadMode || 'total',toNumber(d.days),toNumber(d.finalDays),toNumber(d.settlementDays),d.budget,d.budgetContact || '',d.budgetEta || '',d.budgetAcquiredDate || '',d.budgetStatus || '无预算',d.review,d.status].map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')));
+  const headers = ['需求名称','需求单号','类型','需求方','预算来源','其他预算来源','预算池ID','需求BA','需求PM','验收标准','IR单号','优先级','版本','计划落地日期','工作量填写方式','总工作量','决算人力','结算人力','预算金额w','预算接口人','预算承诺日期','预算获取日期','预算状态','评审结论','需求状态'];
+  const lines = [headers.join(',')].concat(demands.map(d => [d.title,d.demandNo,d.source,d.investment,d.budgetSourceType || '部门基线',d.budgetSourceType === '其他' ? (d.budgetSource || '') : '',d.budgetPoolId || '',d.demandBA || '',d.demandPM || '',d.acceptanceCriteria || '',d.ir,d.priority,d.version,d.landingDate || '',d.workloadMode || 'total',toNumber(d.days),toNumber(d.finalDays),toNumber(d.settlementDays),d.budget,d.budgetContact || '',d.budgetEta || '',d.budgetAcquiredDate || '',d.budgetStatus || '无预算',d.review,d.status].map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')));
   const blob = new Blob([lines.join('\n')], {type:'text/csv;charset=utf-8'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'demands.csv'; a.click();
 }
