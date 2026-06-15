@@ -1004,7 +1004,7 @@ function App() {
     ['demands', FileText, '需求池'], ['submit', BriefcaseBusiness, '提交需求'], ['personnel', Users, '人员管理'], ['budgetManage', Settings, '预算管理'], ['budget', PieChart, '预算与风险分析'], ['manual', BookOpen, '操作手册']
   ];
   return <div className="app">
-    <aside><div className="brand"><BarChart3 size={28}/><div><b>人力预算规划</b><span>Workforce Planning</span></div></div>{nav.map(([id, Icon, label]) => <button key={id} className={page===id?'active':''} onClick={()=>setPage(id)}><Icon size={18}/>{label}</button>)}</aside>
+    <aside><div className="brand"><BarChart3 size={28}/><div><b>需求及人力规划</b><span>Workforce Planning</span></div></div>{nav.map(([id, Icon, label]) => <button key={id} className={page===id?'active':''} onClick={()=>setPage(id)}><Icon size={18}/>{label}</button>)}</aside>
     <main>
       {page === 'demands' && <DemandPool demands={demands} setDemands={setDemands} totalDays={totalDays} unfundedDays={unfundedDays}/>}
       {page === 'submit' && <DemandSubmit demands={demands} setDemands={setDemands} goPool={()=>setPage('demands')}/>}
